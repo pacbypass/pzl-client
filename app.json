@@ -1,0 +1,69 @@
+{
+  "expo": {
+    "name": "PZŁ Koła Łowieckie",
+    "slug": "pzl-client",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "pzl",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#96d784"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "pl.pzl.mobileapp.client",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "location",
+          "fetch",
+          "remote-notification"
+        ],
+        "NSLocationWhenInUseUsageDescription": "Aplikacja używa lokalizacji do wyświetlania Twojej pozycji na mapie łowieckiej.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Podczas polowania aplikacja aktualizuje pozycję również w tle."
+      }
+    },
+    "android": {
+      "package": "com.smallgis.pzl.client",
+      "adaptiveIcon": {
+        "backgroundColor": "#2f6b26"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "@maplibre/maplibre-react-native",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Aplikacja używa lokalizacji do wyświetlania Twojej pozycji na mapie łowieckiej."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "apiBaseUrl": "https://api.systemkl2.pzlow.pl",
+      "authIssuer": "https://auth.systemkl2.pzlow.pl",
+      "geoBaseUrl": "https://geo.systemkl2.pzlow.pl",
+      "oidcClientId": "pzl-mobile-client",
+      "router": {},
+      "eas": {
+        "projectId": "bd6e2c11-4c8b-4749-9086-59ad168a38c1"
+      }
+    },
+    "owner": "pacbypass"
+  }
+}

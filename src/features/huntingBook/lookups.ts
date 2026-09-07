@@ -29,18 +29,20 @@ function toOptions(
     .filter((x): x is Option => x !== null);
 }
 
-/** Members of the club (to book another hunter). Long cache — rarely changes. */
+/** Active hunters to book another hunter — `/persons/active-hunters/simple`
+ *  returns `[{value: personId, label: name}]` (available to regular members,
+ *  unlike the officer-only `hunters-list`). Long cache — rarely changes. */
 export function useHunterOptions(unitId: string) {
   return useQuery({
-    queryKey: ['lookup', 'hunters', unitId],
+    queryKey: ['lookup', 'activeHunters', unitId],
     enabled: !!unitId,
     staleTime: 1000 * 60 * 60,
     queryFn: async () => {
-      const data = await apiRequest(endpoints.hunters(unitId).simpleList);
+      const data = await apiRequest(endpoints.hunters(unitId).activeHuntersSimple);
       return toOptions(
         data,
-        ['id', 'hunterId', 'personId'],
-        ['fullName', 'name', 'hunterName', 'label'],
+        ['value', 'id', 'personId'],
+        ['label', 'fullName', 'name'],
       );
     },
   });
@@ -69,6 +71,20 @@ export function useAnimalTypeOptions() {
     queryFn: async () => {
       const data = await apiRequest(endpoints.dictionaries.animalType);
       return toOptions(data, ['id', 'code'], ['name', 'label']);
+    },
+  });
+}
+
+export type HuntingYear = { value: number; label: string; isActual?: boolean };
+
+/** Hunting years (`/dictionaries/years` → [{value, label:"2026-2027", isActual}]). */
+export function useHuntingYears() {
+  return useQuery({
+    queryKey: ['lookup', 'years'],
+    staleTime: 1000 * 60 * 60 * 24,
+    queryFn: async () => {
+      const data = await apiRequest<HuntingYear[]>(endpoints.dictionaries.years);
+      return Array.isArray(data) ? data : [];
     },
   });
 }

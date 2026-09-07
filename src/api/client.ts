@@ -1,5 +1,6 @@
 import { config } from '@/config';
 import { demoResponse, isDemo } from '@/api/demo';
+import { addLog } from '@/api/requestLog';
 
 export class ApiError extends Error {
   constructor(
@@ -56,13 +57,18 @@ export type RequestOptions = {
 
 function buildUrl(path: string, opts: RequestOptions): string {
   const base = opts.baseUrl ?? config.apiBaseUrl;
-  const url = new URL(path.startsWith('http') ? path : base + path);
+  let url = path.startsWith('http') ? path : base + path;
+  // Build query manually — React Native's `new URL()`/`searchParams` is unreliable.
   if (opts.query) {
+    const parts: string[] = [];
     for (const [k, v] of Object.entries(opts.query)) {
-      if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+      if (v !== undefined && v !== null) {
+        parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
+      }
     }
+    if (parts.length) url += (url.includes('?') ? '&' : '?') + parts.join('&');
   }
-  return url.toString();
+  return url;
 }
 
 export async function apiRequest<T = unknown>(
@@ -82,20 +88,49 @@ export async function apiRequest<T = unknown>(
   if (token) headers.Authorization = `Bearer ${token}`;
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
 
-  const res = await fetch(url, {
-    method: opts.method ?? 'GET',
-    headers,
-    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-    signal: opts.signal,
-  });
+  const method = opts.method ?? 'GET';
+  const started = Date.now();
 
-  const text = await res.text();
-  const data = text ? safeJson(text) : null;
+  try {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal: opts.signal,
+    });
 
-  if (!res.ok) throw new ApiError(res.status, url, data);
-  // Some endpoints return the business-error envelope with HTTP 200.
-  if (isBusinessError(data)) throw new ApiError(res.status, url, data);
-  return data as T;
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+
+    addLog({
+      ts: started,
+      method,
+      url,
+      status: res.status,
+      ok: res.ok,
+      durationMs: Date.now() - started,
+      requestBody: opts.body,
+      responseData: data,
+    });
+
+    if (!res.ok) throw new ApiError(res.status, url, data);
+    // Some endpoints return the business-error envelope with HTTP 200.
+    if (isBusinessError(data)) throw new ApiError(res.status, url, data);
+    return data as T;
+  } catch (e) {
+    // Network/abort failure (no HTTP response) — ApiError was already logged above.
+    if (!(e instanceof ApiError)) {
+      addLog({
+        ts: started,
+        method,
+        url,
+        durationMs: Date.now() - started,
+        requestBody: opts.body,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+    throw e;
+  }
 }
 
 function safeJson(text: string): unknown {

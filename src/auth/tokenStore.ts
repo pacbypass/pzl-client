@@ -46,6 +46,29 @@ export async function loadTokens(): Promise<TokenSet | null> {
   }
 }
 
+// --- saved credentials (opt-in "keep me signed in") ---
+const CRED_KEY = 'pzl.credentials';
+
+export type Credentials = { username: string; password: string; helpdesccode?: string };
+
+export async function saveCredentials(creds: Credentials): Promise<void> {
+  await store.setItem(CRED_KEY, JSON.stringify(creds));
+}
+
+export async function loadCredentials(): Promise<Credentials | null> {
+  const raw = await store.getItem(CRED_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Credentials;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearCredentials(): Promise<void> {
+  await store.removeItem(CRED_KEY);
+}
+
 export async function saveTokens(tokens: TokenSet): Promise<void> {
   await store.setItem(KEY, JSON.stringify(tokens));
 }

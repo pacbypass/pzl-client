@@ -10,6 +10,9 @@ export type HuntingMapProps = {
   vectorOverlays: VectorOverlay[];
   initialCamera?: MapCamera | null;
   onCameraChange?: (camera: MapCamera) => void;
+  showUserLocation?: boolean; // handled via GeolocateControl on web
+  flyTo?: MapCamera | null;
+  onMapPress?: (coord: { longitude: number; latitude: number }) => void;
 };
 
 /** Web map via maplibre-gl. */
@@ -18,11 +21,15 @@ export function HuntingMap({
   vectorOverlays,
   initialCamera,
   onCameraChange,
+  flyTo,
+  onMapPress,
 }: HuntingMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const cbRef = useRef(onCameraChange);
   cbRef.current = onCameraChange;
+  const pressRef = useRef(onMapPress);
+  pressRef.current = onMapPress;
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -34,10 +41,18 @@ export function HuntingMap({
       zoom: cam.zoom,
     });
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
-    map.addControl(new maplibregl.GeolocateControl({ trackUserLocation: true }));
+    map.addControl(
+      new maplibregl.GeolocateControl({
+        positionOptions: { enableHighAccuracy: true },
+        trackUserLocation: true, // accuracy circle + heading are on by default
+      }),
+    );
     map.on('moveend', () => {
       const c = map.getCenter();
       cbRef.current?.({ longitude: c.lng, latitude: c.lat, zoom: map.getZoom() });
+    });
+    map.on('click', (e) => {
+      pressRef.current?.({ longitude: e.lngLat.lng, latitude: e.lngLat.lat });
     });
     mapRef.current = map;
     return () => {
@@ -53,6 +68,10 @@ export function HuntingMap({
       buildMapStyle(activeRasterKeys, vectorOverlays) as maplibregl.StyleSpecification,
     );
   }, [activeRasterKeys, vectorOverlays]);
+
+  useEffect(() => {
+    if (flyTo) mapRef.current?.flyTo({ center: [flyTo.longitude, flyTo.latitude], zoom: flyTo.zoom });
+  }, [flyTo]);
 
   return (
     <div

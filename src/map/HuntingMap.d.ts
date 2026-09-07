@@ -8,6 +8,14 @@ export type HuntingMapProps = {
   vectorOverlays: VectorOverlay[];
   initialCamera?: MapCamera | null;
   onCameraChange?: (camera: MapCamera) => void;
+  /** Show the user-location dot (only after location permission is granted). */
+  showUserLocation?: boolean;
+  /** When this changes, the camera animates to the given coordinate. */
+  flyTo?: MapCamera | null;
+  /** Fired when the user taps the map (used to select nearby features). */
+  onMapPress?: (coord: { longitude: number; latitude: number }) => void;
+  /** Coordinate of the currently-selected device, highlighted with a ring. */
+  highlight?: { longitude: number; latitude: number } | null;
 };
 
 export declare function HuntingMap(props: HuntingMapProps): React.ReactElement;

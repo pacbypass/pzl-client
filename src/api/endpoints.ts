@@ -45,7 +45,13 @@ export const endpoints = {
     huntingById: (id: string) => `${unit(u)}/huntings/${id}`,
     mine: `${unit(u)}/huntings/me`,
     book: `${unit(u)}/electronic-hunting-book`,
-    soloSignUp: `${unit(u)}/electronic-hunting-book/forms/solo-sign-up`,
+    // Create / read a hunt entry — district-scoped collection (POST creates a
+    // sign-up; GET lists the book). NOTE: `electronic-hunting-book/forms/solo-sign-up`
+    // is a SCREEN route in the original app, NOT an API path (POSTing there 404s).
+    districtHuntings: (districtId: string | number) =>
+      `${unit(u)}/hunting-districts/${districtId}/huntings`,
+    districtHuntingById: (districtId: string | number, id: string) =>
+      `${unit(u)}/hunting-districts/${districtId}/huntings/${id}`,
     inspections: `${unit(u)}/electronic-hunting-book/inspections`,
     low1: `${unit(u)}/low1`,
     low1Statuses: `${unit(u)}/low1/dictionaries/statuses`,
@@ -144,7 +150,13 @@ export const endpoints = {
 
   hunters: (u: string) => ({
     list: `${unit(u)}/hunters`,
+    // hunters-list is officer-only (403 for regular members). For picking a
+    // hunter to book (sign-up "Inny myśliwy") use the active-hunters picker,
+    // then that hunter's permits.
     simpleList: `${unit(u)}/hunters-list`,
+    activeHuntersSimple: `${unit(u)}/persons/active-hunters/simple`,
+    permits: (hunterId: string | number) =>
+      `${unit(u)}/persons/hunters/${hunterId}/permits`,
     invited: `${unit(u)}/hunter-invited`,
     localization: `${unit(u)}/hunter-localization`,
     trainees: `${unit(u)}/trainees`,

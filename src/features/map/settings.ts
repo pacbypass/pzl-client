@@ -9,11 +9,14 @@ export type MapSettings = {
   baseLayerKey: string;
   rasterOverlays: Record<string, boolean>;
   showDistricts: boolean;
+  showRewirs: boolean;
   showDevices: boolean;
   showStands: boolean;
   showGrounds: boolean;
   /** Only show these district ids (empty = all). */
   filterDistrictIds: string[];
+  /** Only show these device type ids (empty = all types). */
+  deviceTypeIds: number[];
   camera: { longitude: number; latitude: number; zoom: number } | null;
 };
 
@@ -21,10 +24,12 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   baseLayerKey: 'osm',
   rasterOverlays: {},
   showDistricts: true,
+  showRewirs: true,
   showDevices: true,
   showStands: false,
   showGrounds: false,
   filterDistrictIds: [],
+  deviceTypeIds: [],
   camera: null,
 };
 

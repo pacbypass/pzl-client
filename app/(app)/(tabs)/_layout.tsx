@@ -35,6 +35,10 @@ export default function TabsLayout() {
         name="profile"
         options={{ title: 'Profil', tabBarIcon: icon('account') }}
       />
+      <Tabs.Screen
+        name="debug"
+        options={{ title: 'Debug', tabBarIcon: icon('bug-outline') }}
+      />
       {/* Module menu stays navigable (from Profile) but is not a primary tab. */}
       <Tabs.Screen name="(menu)" options={{ href: null }} />
     </Tabs>

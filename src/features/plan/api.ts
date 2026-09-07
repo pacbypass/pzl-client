@@ -4,78 +4,81 @@ import { apiRequest } from '@/api/client';
 import { endpoints } from '@/api/endpoints';
 
 /**
- * Annual hunting plan execution row. From the reversed schema the realization
- * fields are `target` (planned) and `done` (harvested), plus
- * `remainingToHarvest` / `percentage`. Species labels come as animalType*.
+ * Annual hunting plan execution. Real shape (verified against the live API):
+ *   GET /units/{u}/annual-hunting-plans/execution-plan?year=&hunting-district-id=
+ *   → { huntingLargeAnimal: Row[], huntingSmallAnimal: Row[], animals, igoAnimals }
+ * where each Row = { animal: {name, fullName, ...}, plannedHarvest, harvested,
+ *   remainingToHarvest, executionRate, ... }.
  */
-export const PlanRowSchema = z
-  .object({
-    animalTypeId: z.string().optional(),
-    animalTypeName: z.string().optional(),
-    category: z.string().optional(),
-    sex: z.string().optional(),
-    target: z.number().optional(),
-    done: z.number().optional(),
-    remainingToHarvest: z.number().optional(),
-    percentage: z.number().optional(),
-  })
+const AnimalSchema = z
+  .object({ name: z.string().optional(), fullName: z.string().optional() })
   .passthrough();
 
-export type PlanRow = z.infer<typeof PlanRowSchema>;
+const PlanRowSchema = z
+  .object({
+    animal: AnimalSchema.optional(),
+    plannedHarvest: z.number().optional(),
+    harvested: z.number().optional(),
+    remainingToHarvest: z.number().optional(),
+    executionRate: z.number().optional(),
+    losses: z.number().optional(),
+  })
+  .passthrough();
 
 const ExecutionSchema = z
   .object({
-    year: z.union([z.string(), z.number()]).optional(),
-    planDetails: z.array(PlanRowSchema).optional(),
-    details: z.array(PlanRowSchema).optional(),
-    rows: z.array(PlanRowSchema).optional(),
+    huntingLargeAnimal: z.array(PlanRowSchema).optional(),
+    huntingSmallAnimal: z.array(PlanRowSchema).optional(),
   })
   .passthrough();
 
-export type PlanRowView = PlanRow & {
+export type PlanRowView = {
   label: string;
   planned: number;
   harvested: number;
   remaining: number;
   pct: number;
+  group: 'large' | 'small';
 };
 
-function coerceRows(data: unknown): PlanRowView[] {
-  const parsed = ExecutionSchema.safeParse(data);
-  let rows: PlanRow[] = [];
-  if (parsed.success) {
-    rows = parsed.data.planDetails ?? parsed.data.details ?? parsed.data.rows ?? [];
-  } else if (Array.isArray(data)) {
-    rows = z.array(PlanRowSchema).parse(data);
-  }
+function toRows(rows: z.infer<typeof PlanRowSchema>[], group: 'large' | 'small'): PlanRowView[] {
   return rows.map((r) => {
-    const planned = r.target ?? 0;
-    const harvested = r.done ?? 0;
+    const planned = r.plannedHarvest ?? 0;
+    const harvested = r.harvested ?? 0;
     const remaining = r.remainingToHarvest ?? Math.max(0, planned - harvested);
+    const raw = r.executionRate;
     const pct =
-      r.percentage != null
-        ? r.percentage > 1
-          ? r.percentage / 100
-          : r.percentage
-        : planned > 0
-          ? harvested / planned
-          : 0;
-    const label = [r.animalTypeName ?? 'Gatunek', r.category, r.sex]
-      .filter(Boolean)
-      .join(' · ');
-    return { ...r, label, planned, harvested, remaining, pct };
+      raw != null ? (raw > 1 ? raw / 100 : raw) : planned > 0 ? harvested / planned : 0;
+    return {
+      label: r.animal?.fullName ?? r.animal?.name ?? 'Gatunek',
+      planned,
+      harvested,
+      remaining,
+      pct,
+      group,
+    };
   });
 }
 
-export function usePlanExecution(unitId: string) {
+export function usePlanExecution(
+  unitId: string,
+  year: number | undefined,
+  huntingDistrictId: string | undefined,
+) {
   return useQuery({
-    queryKey: ['plan', 'execution', unitId],
-    enabled: !!unitId,
+    queryKey: ['plan', 'execution', unitId, year, huntingDistrictId],
+    enabled: !!unitId && !!year && !!huntingDistrictId,
     queryFn: async () => {
       const data = await apiRequest(
         endpoints.annualHuntingPlans(unitId).executionPlan,
+        { query: { year, 'hunting-district-id': huntingDistrictId } },
       );
-      return coerceRows(data);
+      const parsed = ExecutionSchema.safeParse(data);
+      if (!parsed.success) return [] as PlanRowView[];
+      return [
+        ...toRows(parsed.data.huntingLargeAnimal ?? [], 'large'),
+        ...toRows(parsed.data.huntingSmallAnimal ?? [], 'small'),
+      ];
     },
   });
 }

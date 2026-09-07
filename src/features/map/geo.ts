@@ -25,20 +25,97 @@ function toFeatureCollection(data: unknown): FeatureCollection {
   return EMPTY;
 }
 
-// These layers change rarely; cache long and let the persisted cache serve them
-// offline. `staleTime` high so we don't refetch in the field unless asked.
+// Map layers update ONLY when the user taps the reload button — never on their
+// own. staleTime:Infinity + no refetch-on-mount/reconnect means the data loads
+// once (first time a layer is shown) and then stays put until an explicit
+// refetch() from the reload button. Persisted cache serves them offline.
 const GEO_QUERY_OPTS = {
-  staleTime: 1000 * 60 * 60 * 24, // 1 day
+  staleTime: Infinity,
   gcTime: 1000 * 60 * 60 * 24 * 60, // 60 days — survive long offline stints
+  refetchOnMount: false,
+  refetchOnReconnect: false,
 } as const;
 
-export function useDistrictsGeo(unitId: string, enabled: boolean) {
+/** Build a polygon FeatureCollection from the district list, each of which
+ *  carries a GeoJSON `geometry` (MultiPolygon, lng/lat). */
+function districtsToGeo(data: unknown): FeatureCollection {
+  // Demo/legacy already returns a FeatureCollection.
+  const d = data as Record<string, unknown>;
+  if (d?.type === 'FeatureCollection') return toFeatureCollection(data);
+  const rows = Array.isArray(data)
+    ? data
+    : Array.isArray(d?.result)
+      ? (d.result as unknown[])
+      : [];
+  const features = rows
+    .map((r) => r as Record<string, unknown>)
+    .filter((r) => r.geometry && typeof r.geometry === 'object')
+    .map((r) => ({
+      type: 'Feature' as const,
+      geometry: r.geometry,
+      properties: { number: String(r.number ?? ''), id: r.id },
+    }));
+  return { type: 'FeatureCollection', features };
+}
+
+export function useDistrictsGeo(
+  unitId: string,
+  year: number | undefined,
+  enabled: boolean,
+) {
   return useQuery({
-    queryKey: ['geo', 'districts', unitId],
-    enabled: !!unitId && enabled,
+    queryKey: ['geo', 'districts', unitId, year],
+    enabled: !!unitId && !!year && enabled,
     ...GEO_QUERY_OPTS,
-    queryFn: async () =>
-      toFeatureCollection(await apiRequest(endpoints.geo(unitId).huntingDistrictsMap)),
+    queryFn: async () => {
+      // Each district in this list carries its own polygon `geometry`.
+      const data = await apiRequest(`/units/${unitId}/hunting-districts`, {
+        query: { year },
+      });
+      return districtsToGeo(data);
+    },
+  });
+}
+
+/**
+ * Rewiry (sub-sectors of the obwody) — each a polygon with a `name` (rewir
+ * number) and `color`. `/units/{u}/hunting-districts/grounds/all?districtIds=…`
+ * (districtIds repeated, one per district).
+ */
+export function useRewirsGeo(
+  unitId: string,
+  districtIds: string[],
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ['geo', 'rewirs', unitId, [...districtIds].sort().join(',')],
+    enabled: !!unitId && districtIds.length > 0 && enabled,
+    ...GEO_QUERY_OPTS,
+    queryFn: async () => {
+      const qs = districtIds
+        .map((id) => `districtIds=${encodeURIComponent(id)}`)
+        .join('&');
+      const data = await apiRequest<unknown>(
+        `/units/${unitId}/hunting-districts/grounds/all?${qs}`,
+      );
+      const arr = Array.isArray(data)
+        ? data
+        : ((data as { result?: unknown[] })?.result ?? []);
+      return {
+        type: 'FeatureCollection',
+        features: arr
+          .map((g) => g as Record<string, unknown>)
+          .filter((g) => g.geometry && typeof g.geometry === 'object')
+          .map((g) => ({
+            type: 'Feature' as const,
+            geometry: g.geometry,
+            properties: {
+              name: String(g.name ?? ''),
+              color: (g.color as string) ?? '#007fff',
+            },
+          })),
+      } as FeatureCollection;
+    },
   });
 }
 

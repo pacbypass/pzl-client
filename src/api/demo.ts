@@ -109,6 +109,14 @@ const districtsGeo = {
   ],
 };
 
+// Rewiry (sub-sectors) within the demo obwód.
+const groundsData = [
+  { huntingGroundId: 1, huntingDistrictId: 1, name: '1', color: '#007fff', geometry: { type: 'Polygon', coordinates: [ring(20.95, 52.24, 0.05)] } },
+  { huntingGroundId: 2, huntingDistrictId: 1, name: '2', color: '#007fff', geometry: { type: 'Polygon', coordinates: [ring(21.05, 52.24, 0.05)] } },
+  { huntingGroundId: 3, huntingDistrictId: 1, name: '3', color: '#007fff', geometry: { type: 'Polygon', coordinates: [ring(20.95, 52.15, 0.05)] } },
+  { huntingGroundId: 4, huntingDistrictId: 1, name: '4', color: '#007fff', geometry: { type: 'Polygon', coordinates: [ring(21.05, 52.15, 0.05)] } },
+];
+
 const devicesGeo = {
   type: 'FeatureCollection',
   features: [
@@ -117,6 +125,66 @@ const devicesGeo = {
     { type: 'Feature', properties: { id: 'dev3', type: 'Lizawka' }, geometry: { type: 'Point', coordinates: [21.33, 52.06] } },
   ],
 };
+
+// Hunting devices (urządzenia łowieckie) with coordinates + types.
+const deviceTypes = [
+  { value: 34, label: 'Zwyżka' },
+  { value: 3, label: 'Ambona' },
+  { value: 1, label: 'Paśnik' },
+  { value: 2, label: 'Lizawka' },
+];
+function dev(id: number, name: string, typeId: number, typeName: string, lng: number, lat: number) {
+  return {
+    registerId: id,
+    registerName: name,
+    registerTypeId: typeId,
+    registerTypeName: typeName,
+    marker: { type: 'Point', coordinates: [lng, lat] },
+    huntingDistrictId: 1,
+  };
+}
+const devices = [
+  dev(1, 'Ambona przy lesie', 3, 'Ambona', 21.01, 52.21),
+  dev(2, 'Zwyżka za kurnikami', 34, 'Zwyżka', 21.03, 52.19),
+  dev(3, 'Ambona łąkowa', 3, 'Ambona', 20.98, 52.17),
+  dev(4, 'Paśnik centralny', 1, 'Paśnik', 21.34, 52.06),
+  dev(5, 'Lizawka nad rzeką', 2, 'Lizawka', 21.36, 52.04),
+];
+
+// Książka ewidencji — some entries, one currently hunting.
+const bookEntries = [
+  {
+    id: 1, number: 145, startDate: minsAgo(70), endDate: null, huntingDistrictId: 1,
+    leadingPersonFullname: 'Andrzej Nowak', huntingPlace: 'Rewir: 17 (Ambona A-4)',
+    permitNumber: '12/2026', isStarted: true, isEnded: false, shotsFired: 0, animals: null,
+    checkoutPersonFullname: 'Andrzej Nowak',
+  },
+  {
+    id: 2, number: 144, startDate: minsAgo(40), endDate: null, huntingDistrictId: 1,
+    leadingPersonFullname: 'Marek Wiśniewski', huntingPlace: 'Rewir: 18 (Zwyżka B-1)',
+    permitNumber: '09/2026', isStarted: true, isEnded: false, shotsFired: 1, animals: null,
+    checkoutPersonFullname: 'Marek Wiśniewski',
+  },
+  {
+    id: 3, number: 140, startDate: minsAgo(1500), endDate: minsAgo(1350), huntingDistrictId: 1,
+    leadingPersonFullname: 'Piotr Zieliński', huntingPlace: 'Rewir: 4 (Paśnik C-2)',
+    permitNumber: '07/2026', isStarted: true, isEnded: true, shotsFired: 2,
+    animals: [{ animalName: 'Dzik', amount: 1, sex: 'samiec' }],
+    checkoutPersonFullname: 'Piotr Zieliński', checkinPersonFullname: 'Piotr Zieliński',
+  },
+];
+
+const eventAnimals = [
+  { animalTypeId: 1, animalName: 'Dzik' },
+  { animalTypeId: 2, animalName: 'Sarna' },
+  { animalTypeId: 3, animalName: 'Jeleń szlachetny' },
+  { animalTypeId: 4, animalName: 'Lis' },
+];
+const eventTypes = [
+  { eventTypeId: 1, eventTypeName: 'Odstrzał' },
+  { eventTypeId: 4, eventTypeName: 'Odłów' },
+  { eventTypeId: 3, eventTypeName: 'Odstrzał niezgodny z pozwoleniem' },
+];
 
 const units = [
   { id: 'demo-unit', name: 'KŁ Demo „Ponowa”', type: 'Koło łowieckie', number: '123' },
@@ -147,16 +215,32 @@ const animalTypes = [
   { id: 'a4', name: 'Lis' },
 ];
 
+function planRow(fullName: string, plannedHarvest: number, harvested: number) {
+  return {
+    animal: { name: fullName, fullName },
+    plannedHarvest,
+    harvested,
+    remainingToHarvest: Math.max(0, plannedHarvest - harvested),
+    executionRate: plannedHarvest > 0 ? harvested / plannedHarvest : 0,
+  };
+}
+
 const planExecution = {
-  year: new Date().getFullYear(),
-  planDetails: [
-    { animalTypeId: 'a3', animalTypeName: 'Jeleń szlachetny', category: 'byki', target: 12, done: 7 },
-    { animalTypeId: 'a3b', animalTypeName: 'Jeleń szlachetny', category: 'łanie', target: 20, done: 18 },
-    { animalTypeId: 'a2', animalTypeName: 'Sarna', category: 'kozły', target: 30, done: 9 },
-    { animalTypeId: 'a1', animalTypeName: 'Dzik', target: 45, done: 46 },
-    { animalTypeId: 'a4', animalTypeName: 'Lis', target: 25, done: 4 },
+  huntingLargeAnimal: [
+    planRow('Jeleń szlachetny · byki', 12, 7),
+    planRow('Jeleń szlachetny · łanie', 20, 18),
+    planRow('Sarna · kozły', 30, 9),
+    planRow('Dzik', 45, 46),
   ],
+  huntingSmallAnimal: [planRow('Lis', 25, 4)],
+  animals: [],
+  igoAnimals: [],
 };
+
+const years = [
+  { value: 2026, label: '2026-2027', isActual: true },
+  { value: 2025, label: '2025-2026', isActual: false },
+];
 
 /** Route the request to a fixture. `path` is the API path (no origin). */
 export function demoResponse(
@@ -166,6 +250,10 @@ export function demoResponse(
 ): unknown {
   const m = method.toUpperCase();
 
+  // current user's hunts: { result, total }
+  if (path.endsWith('/huntings/me')) {
+    return { result: hunts.filter((h) => h.isActive), total: hunts.length };
+  }
   // hunts collection
   if (/\/huntings(\?|$)/.test(path) || /\/huntings$/.test(path)) {
     if (m === 'POST') {
@@ -221,10 +309,37 @@ export function demoResponse(
     return hunts.find((h) => h.id === id) ?? {};
   }
 
+  if (path.includes('/userinfo')) {
+    return {
+      username: 'demo',
+      firstname: 'Jan',
+      lastname: 'Kowalski',
+      email: 'demo@pzl.local',
+      units: [
+        {
+          id: 'demo-unit',
+          name: 'KŁ Demo „Ponowa”',
+          type: 'KL',
+          typeName: 'Koło Łowieckie',
+          roles: [{ name: 'Łowczy', systemId: 'LOWCZY' }],
+        },
+      ],
+    };
+  }
   if (path.endsWith('/units')) return units;
   if (path.includes('/annual-hunting-plans/execution-plan')) return planExecution;
+  if (path.includes('/dictionaries/years')) return years;
+  if (path.includes('/hunting-events/animals')) return eventAnimals;
+  if (path.includes('/hunting-events/event-types')) return eventTypes;
+  if (path.includes('/hunting-tools/dictionaries/types')) return deviceTypes;
+  if (path.includes('/hunting-tools/all')) return devices;
+  if (path.includes('/hunting-districts/grounds/all')) return groundsData;
+  if (/\/hunting-districts\/[^/]+\/huntings/.test(path)) {
+    return { result: bookEntries, total: bookEntries.length };
+  }
   if (path.includes('/hunting-districts/map')) return districtsGeo;
   if (path.includes('/hunting-districts/active/simple')) return districtOptions;
+  if (path.endsWith('/hunting-districts')) return districtsGeo;
   if (path.includes('/hunting-districts/grounds-map')) return { type: 'FeatureCollection', features: [] };
   if (path.includes('/hunting-devices/map')) return devicesGeo;
   if (path.includes('/hunting-stations/map')) return { type: 'FeatureCollection', features: [] };

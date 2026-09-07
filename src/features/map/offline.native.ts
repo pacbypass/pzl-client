@@ -21,29 +21,50 @@ export async function downloadOfflineArea(
     'data:application/json;charset=utf-8,' +
     encodeURIComponent(JSON.stringify(style));
 
+  // Remove any previous pack with this name so a retry doesn't wedge.
+  await OfflineManager.deletePack(name).catch(() => {});
+
   return new Promise<OfflineResult>((resolve) => {
+    let done = false;
+    const finish = (r: OfflineResult) => {
+      if (done) return;
+      done = true;
+      resolve(r);
+    };
+
+    // Never spin forever — the pack keeps downloading in the background even
+    // after we stop waiting.
+    const timeout = setTimeout(
+      () =>
+        finish({
+          ok: true,
+          message:
+            'Pobieranie w toku — obszar zapisuje się w tle. Odwiedzone kafelki są już dostępne offline.',
+        }),
+      30_000,
+    );
+
     OfflineManager.createPack(
       { name, styleURL, bounds, minZoom, maxZoom },
       (_pack, status) => {
         if ((status?.percentage ?? 0) >= 100) {
-          resolve({ ok: true, message: 'Obszar zapisany offline.' });
+          clearTimeout(timeout);
+          finish({ ok: true, message: 'Obszar zapisany offline.' });
         }
       },
       (_pack, err) => {
-        resolve({
+        clearTimeout(timeout);
+        finish({
           ok: false,
-          message: `Nie udało się zapisać obszaru: ${String(
-            (err as Error)?.message ?? err,
-          )}`,
+          message: `Nie udało się zapisać obszaru: ${String((err as Error)?.message ?? err)}`,
         });
       },
-    ).catch((err: unknown) =>
-      resolve({
+    ).catch((err: unknown) => {
+      clearTimeout(timeout);
+      finish({
         ok: false,
-        message: `Nie udało się rozpocząć pobierania: ${String(
-          (err as Error)?.message ?? err,
-        )}`,
-      }),
-    );
+        message: `Nie udało się rozpocząć pobierania: ${String((err as Error)?.message ?? err)}`,
+      });
+    });
   });
 }

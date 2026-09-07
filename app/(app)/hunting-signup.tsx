@@ -1,25 +1,37 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import {
   Button,
+  Checkbox,
+  Divider,
   HelperText,
   Menu,
   SegmentedButtons,
   Text,
   TextInput,
+  TouchableRipple,
   useTheme,
 } from 'react-native-paper';
 import { useIsOnline } from '@/offline/connectivity';
-import { useSignUpHunt } from '@/features/huntingBook/api';
+import { useAuth } from '@/auth/AuthProvider';
+import { personIdFromToken } from '@/auth/jwt';
 import {
-  useAnimalTypeOptions,
+  useHunterPermits,
+  useMyAuthorizations,
+  useRewirOptions,
+  useSignUpHunt,
+} from '@/features/huntingBook/api';
+import {
   useHunterOptions,
   useHuntingDistrictOptions,
-  useStandOptions,
+  useHuntingYears,
   type Option,
 } from '@/features/huntingBook/lookups';
 import { useUnits } from '@/units/UnitProvider';
+import { DateTimeField, atSecond59 } from '@/components/DateTimeField';
+
+const HOUR = 3600 * 1000;
 
 function Dropdown({
   label,
@@ -27,12 +39,14 @@ function Dropdown({
   value,
   onChange,
   loading,
+  emptyText = 'Brak danych',
 }: {
   label: string;
   options: Option[];
   value?: Option;
   onChange: (o: Option) => void;
   loading?: boolean;
+  emptyText?: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -40,15 +54,19 @@ function Dropdown({
       visible={open}
       onDismiss={() => setOpen(false)}
       anchor={
-        <TextInput
-          label={label}
-          mode="outlined"
-          editable={false}
-          value={value?.label ?? ''}
-          right={<TextInput.Icon icon="menu-down" onPress={() => setOpen(true)} />}
-          onPressIn={() => setOpen(true)}
-          placeholder={loading ? 'Wczytywanie…' : 'Wybierz…'}
-        />
+        // Full-width tap target (not just the icon) — see DateTimeField.
+        <TouchableRipple onPress={() => setOpen(true)}>
+          <View pointerEvents="none">
+            <TextInput
+              label={label}
+              mode="outlined"
+              editable={false}
+              value={value?.label ?? ''}
+              right={<TextInput.Icon icon="menu-down" />}
+              placeholder={loading ? 'Wczytywanie…' : 'Wybierz…'}
+            />
+          </View>
+        </TouchableRipple>
       }
     >
       <ScrollView style={styles.menuScroll}>
@@ -63,7 +81,7 @@ function Dropdown({
           />
         ))}
         {options.length === 0 ? (
-          <Menu.Item title={loading ? 'Wczytywanie…' : 'Brak danych'} disabled />
+          <Menu.Item title={loading ? 'Wczytywanie…' : emptyText} disabled />
         ) : null}
       </ScrollView>
     </Menu>
@@ -82,40 +100,110 @@ export default function HuntingSignup() {
   const { activeUnitId } = useUnits();
   const unitId = activeUnitId ?? '';
   const signUp = useSignUpHunt(unitId);
+  const { tokens } = useAuth();
+  // My own person id (for self sign-up's hunterId) from the access token.
+  const myPersonId = useMemo(
+    () => personIdFromToken(tokens?.accessToken),
+    [tokens?.accessToken],
+  );
+
+  const years = useHuntingYears();
+  const year = years.data?.find((y) => y.isActual)?.value ?? years.data?.[0]?.value;
 
   const hunters = useHunterOptions(unitId);
   const districts = useHuntingDistrictOptions(unitId);
-  const animals = useAnimalTypeOptions();
-  const stands = useStandOptions(unitId);
 
   const [hunter, setHunter] = useState<Option>();
   const [district, setDistrict] = useState<Option>();
-  const [animal, setAnimal] = useState<Option>();
-  const [stand, setStand] = useState<Option>();
+  const [permitIds, setPermitIds] = useState<number[]>([]);
+  const [rewir, setRewir] = useState<Option>();
+  const [notes, setNotes] = useState('');
+  const [consent, setConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canSubmit = useMemo(
-    () => !!district && (mode === 'self' || !!hunter),
-    [district, hunter, mode],
+  // Permit source depends on mode: my own permits (self) vs. the selected
+  // hunter's permits (booking another hunter).
+  const myPermits = useMyAuthorizations(unitId, mode === 'self' ? year : undefined);
+  const otherPermits = useHunterPermits(unitId, mode === 'other' ? hunter?.id : undefined);
+  const permitsQuery = mode === 'other' ? otherPermits : myPermits;
+
+  const now = useMemo(() => atSecond59(new Date()), []);
+  const [start, setStart] = useState<Date>(now);
+  const [end, setEnd] = useState<Date>(atSecond59(new Date(now.getTime() + 3 * HOUR)));
+
+  const rewirs = useRewirOptions(unitId, district?.id);
+  const rewirOptions = useMemo<Option[]>(
+    () => (rewirs.data ?? []).map((r) => ({ id: r.id, label: r.name })),
+    [rewirs.data],
   );
+
+  // Permits for the chosen obwód (from whichever hunter's permit list).
+  const permitsForDistrict = useMemo(
+    () =>
+      (permitsQuery.data ?? []).filter(
+        (a) => district && String(a.huntingDistrictId) === district.id,
+      ),
+    [permitsQuery.data, district],
+  );
+
+  // Reset the permit selection when the obwód OR the booked hunter changes.
+  useEffect(() => {
+    setPermitIds([]);
+  }, [district?.id, hunter?.id]);
+
+  // Reset rewir when the obwód changes.
+  useEffect(() => {
+    setRewir(undefined);
+  }, [district?.id]);
+
+  const togglePermit = (id: number) =>
+    setPermitIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+
+  // Validation. A start that has slipped into the past is NOT an error — it is
+  // clamped to max(now, start) at send time (see clampStartToNow), so submitting
+  // stays allowed and the hunt just starts "now". The end is validated against
+  // that effective start.
+  const effectiveStart = Math.max(start.getTime(), atSecond59(new Date()).getTime());
+  const endAfterStart = end.getTime() > effectiveStart;
+  const endWithin24h = end.getTime() <= effectiveStart + 24 * HOUR;
+  const dateError = !endAfterStart
+    ? 'Zakończenie musi być po rozpoczęciu.'
+    : !endWithin24h
+      ? 'Polowanie nie może trwać dłużej niż 24 godziny.'
+      : null;
+
+  // hunterId (person id): self = token person_id, other = selected hunter.
+  const hunterId = mode === 'other' ? Number(hunter?.id) : myPersonId;
+
+  const canSubmit =
+    !!district &&
+    permitIds.length > 0 &&
+    !!rewir &&
+    !!hunterId &&
+    !dateError;
 
   const submit = async () => {
     setError(null);
-    if (!unitId || !district) return;
+    if (!unitId || !district || !rewir || !hunterId || !canSubmit) return;
     try {
       await signUp.mutateAsync({
         unitId,
-        hunterId: mode === 'other' ? hunter?.id : undefined,
+        anotherHunter: mode === 'other',
+        hunterId,
         hunterName: mode === 'other' ? hunter?.label : 'Ja',
         huntingDistrictId: district.id,
         huntingDistrictName: district.label,
-        standId: stand?.id,
-        standNumber: stand?.label,
-        animalTypeId: animal?.id,
-        animalTypeName: animal?.label,
-        startTimestamp: new Date().toISOString(),
+        permitIds,
+        permitLabel: permitsForDistrict.find((p) => p.id === permitIds[0])?.number,
+        huntingGroundIds: [Number(rewir.id)],
+        huntingPlaceName: rewir.label,
+        startTimestamp: start.toISOString(),
+        endTimestamp: end.toISOString(),
+        notes: notes.trim() || undefined,
+        confirmOtherHuntersConsent: consent,
       });
-      // Success (or queued offline) — either way the entry is in the local list.
       router.back();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Nie udało się zapisać');
@@ -149,7 +237,7 @@ export default function HuntingSignup() {
 
         {mode === 'other' ? (
           <Dropdown
-            label="Myśliwy"
+            label="Myśliwy *"
             options={hunters.data ?? []}
             value={hunter}
             onChange={setHunter}
@@ -164,24 +252,103 @@ export default function HuntingSignup() {
           onChange={setDistrict}
           loading={districts.isLoading}
         />
-        <Dropdown
-          label="Ambona / stanowisko"
-          options={stands.data ?? []}
-          value={stand}
-          onChange={setStand}
-          loading={stands.isLoading}
+
+        {/* Upoważnienia — multi-choice, only those for the chosen obwód. */}
+        <View>
+          <Text variant="labelLarge" style={styles.sectionLabel}>
+            Upoważnienia *
+          </Text>
+          {mode === 'other' && !hunter ? (
+            <HelperText type="info" visible>
+              Najpierw wybierz myśliwego.
+            </HelperText>
+          ) : !district ? (
+            <HelperText type="info" visible>
+              Najpierw wybierz obwód.
+            </HelperText>
+          ) : permitsQuery.isLoading ? (
+            <HelperText type="info" visible>
+              Wczytywanie upoważnień…
+            </HelperText>
+          ) : permitsForDistrict.length === 0 ? (
+            <HelperText type="error" visible>
+              Brak aktywnych upoważnień dla obwodu {district.label}.
+            </HelperText>
+          ) : (
+            <View style={styles.permits}>
+              {permitsForDistrict.map((p) => (
+                <Checkbox.Item
+                  key={p.id}
+                  label={p.number.split(';')[0].trim()}
+                  status={permitIds.includes(p.id) ? 'checked' : 'unchecked'}
+                  onPress={() => togglePermit(p.id)}
+                  position="leading"
+                  style={styles.permitItem}
+                />
+              ))}
+            </View>
+          )}
+        </View>
+
+        <Divider />
+
+        <DateTimeField
+          label="Rozpoczęcie *"
+          value={start}
+          minimumDate={now}
+          onChange={setStart}
         />
+        <DateTimeField
+          label="Zakończenie *"
+          value={end}
+          minimumDate={start}
+          onChange={setEnd}
+        />
+        {dateError ? (
+          <HelperText type="error" visible>
+            {dateError}
+          </HelperText>
+        ) : null}
+
+        <Divider />
+
         <Dropdown
-          label="Gatunek zwierzyny"
-          options={animals.data ?? []}
-          value={animal}
-          onChange={setAnimal}
-          loading={animals.isLoading}
+          label="Rewir *"
+          options={rewirOptions}
+          value={rewir}
+          onChange={setRewir}
+          loading={rewirs.isLoading}
+          emptyText={district ? 'Brak rewirów' : 'Najpierw wybierz obwód'}
         />
 
-        <Text variant="bodySmall" style={styles.startNote}>
-          Rozpoczęcie: teraz ({new Date().toLocaleString('pl-PL')})
-        </Text>
+        <TextInput
+          label="Uwagi"
+          mode="outlined"
+          value={notes}
+          onChangeText={setNotes}
+          multiline
+          numberOfLines={3}
+        />
+
+        {/* Required by the server only when the chosen rewir is already taken
+            ("Zgoda myśliwych jest wymagana gdy chcesz skorzystać z zajętego
+            rewiru!"). Must be the user's own tick — never auto-asserted. */}
+        <View>
+          <Text variant="labelLarge" style={styles.sectionLabel}>
+            Zgoda myśliwych
+          </Text>
+          <Checkbox.Item
+            label="Potwierdzam uzyskanie zgody innych myśliwych na wspólne korzystanie z wskazanego rewiru łowieckiego."
+            status={consent ? 'checked' : 'unchecked'}
+            onPress={() => setConsent((c) => !c)}
+            position="leading"
+            labelVariant="bodySmall"
+            style={styles.permitItem}
+          />
+          <HelperText type="info" visible>
+            Wymagane tylko, gdy wybrany rewir jest już zajęty.
+          </HelperText>
+        </View>
 
         {!online ? (
           <HelperText type="info" visible>
@@ -213,6 +380,8 @@ export default function HuntingSignup() {
 const styles = StyleSheet.create({
   content: { padding: 16, gap: 14 },
   menuScroll: { maxHeight: 320 },
-  startNote: { opacity: 0.7 },
+  sectionLabel: { marginBottom: 2 },
+  permits: { borderRadius: 8, overflow: 'hidden' },
+  permitItem: { paddingVertical: 0 },
   submit: { marginTop: 8, borderRadius: 12 },
 });

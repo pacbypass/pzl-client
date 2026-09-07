@@ -25,12 +25,17 @@ function decodeIdToken(idToken?: string): Record<string, unknown> | null {
 export default function ProfileScreen() {
   const theme = useTheme();
   const router = useRouter();
-  const { tokens, signOut } = useAuth();
-  const { units, activeUnit } = useUnits();
+  const { tokens, signOut, hasSavedCredentials, disableAutoLogin } = useAuth();
+  const { units, activeUnit, user } = useUnits();
 
   const claims = decodeIdToken(tokens?.idToken);
-  const name = (claims?.name as string) ?? (claims?.preferred_username as string) ?? 'Myśliwy';
-  const email = (claims?.email as string) ?? '';
+  // Prefer the real name from /userinfo; fall back to id_token claims.
+  const name =
+    user?.fullName ??
+    (claims?.name as string) ??
+    (claims?.preferred_username as string) ??
+    'Myśliwy';
+  const email = user?.email ?? (claims?.email as string) ?? '';
   const initials = name
     .split(' ')
     .map((s) => s[0])
@@ -60,6 +65,45 @@ export default function ProfileScreen() {
             </Text>
           ) : null}
         </View>
+
+        <Card
+          mode="contained"
+          style={[
+            styles.card,
+            {
+              backgroundColor: hasSavedCredentials
+                ? theme.colors.primaryContainer
+                : theme.colors.surfaceVariant,
+            },
+          ]}
+        >
+          <List.Item
+            title={
+              hasSavedCredentials
+                ? 'Automatyczne logowanie: włączone'
+                : 'Automatyczne logowanie: wyłączone'
+            }
+            description={
+              hasSavedCredentials
+                ? 'Pozostajesz zalogowany — sesja odnawia się automatycznie w tle. Dane są dostępne offline (z zapisaną datą aktualizacji).'
+                : 'Po wygaśnięciu sesji konieczne będzie ponowne logowanie.'
+            }
+            left={(p) => (
+              <List.Icon
+                {...p}
+                icon={hasSavedCredentials ? 'shield-check' : 'shield-off-outline'}
+                color={hasSavedCredentials ? theme.colors.primary : undefined}
+              />
+            )}
+          />
+          {hasSavedCredentials ? (
+            <Card.Actions>
+              <Button onPress={disableAutoLogin} textColor={theme.colors.error}>
+                Wyłącz i zapomnij dane
+              </Button>
+            </Card.Actions>
+          ) : null}
+        </Card>
 
         <Card mode="outlined" style={styles.card}>
           <List.Subheader>Koła łowieckie</List.Subheader>

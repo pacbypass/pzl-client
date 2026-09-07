@@ -70,6 +70,10 @@ export function buildMapStyle(
               ...ov.labelKeys.map((k) => ['get', k]),
               '',
             ],
+            // The glyphs endpoint below serves these fontstacks; without an
+            // explicit font the native renderer requests one it can't fetch and
+            // the labels silently disappear.
+            'text-font': ['Noto Sans Regular'],
             'text-size': 12,
             'symbol-placement': 'point',
           },
@@ -87,7 +91,8 @@ export function buildMapStyle(
         source: src,
         paint: {
           'circle-radius': 6,
-          'circle-color': ov.color,
+          // Per-feature `color` (e.g. device type) if present, else the layer color.
+          'circle-color': ['coalesce', ['get', 'color'], ov.color],
           'circle-stroke-color': '#ffffff',
           'circle-stroke-width': 2,
         },

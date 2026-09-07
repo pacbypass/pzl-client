@@ -7,30 +7,32 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { AppState, Platform } from 'react-native';
+import { AppState } from 'react-native';
 import {
   makeRedirectUri,
   useAuthRequest,
   exchangeCodeAsync,
-  refreshAsync,
   type DiscoveryDocument,
 } from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import { onlineManager } from '@tanstack/react-query';
 import { config } from '@/config';
 import {
+  clearCredentials,
   clearTokens,
+  loadCredentials,
   loadTokens,
+  saveCredentials,
   saveTokens,
+  type Credentials,
   type TokenSet,
 } from '@/auth/tokenStore';
 import { demoIdToken, isDemo, loadDemoFlag, setDemo } from '@/api/demo';
 import { startWebLogin, completeWebLogin } from '@/auth/webAuth';
 import { parsePastedToken, refreshBridgeToken } from '@/auth/authToken';
+import { headlessLogin } from '@/auth/headlessLogin';
 
 loadDemoFlag();
-
-const IS_WEB = Platform.OS === 'web';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -39,9 +41,11 @@ const discovery: DiscoveryDocument = {
   tokenEndpoint: config.oidc.tokenEndpoint,
 };
 
-// Refresh a bit before expiry; also the periodic background cadence.
 const EXPIRY_SKEW_MS = 60_000;
-const BACKGROUND_REFRESH_MS = 4 * 60_000;
+// How often to check, and how far before the (~30-day) token expires to
+// proactively re-login in the background.
+const BACKGROUND_CHECK_MS = 5 * 60_000;
+const REAUTH_WINDOW_MS = 24 * 60 * 60_000; // 1 day
 
 type AuthState = {
   ready: boolean;
@@ -50,6 +54,18 @@ type AuthState = {
   tokens: TokenSet | null;
   signIn: () => Promise<void>;
   signInDemo: () => Promise<void>;
+  /** Native username/password login (no browser). `remember` stores credentials
+   *  in the secure keychain for automatic re-login when the 30-day token lapses. */
+  signInWithPassword: (
+    username: string,
+    password: string,
+    remember: boolean,
+    helpdesccode?: string,
+  ) => Promise<void>;
+  /** Whether credentials are saved for automatic re-login. */
+  hasSavedCredentials: boolean;
+  /** Forget saved credentials but stay signed in on the current token. */
+  disableAutoLogin: () => Promise<void>;
   /** Web login step 1: returns the PZŁ authorize URL to open. */
   beginWebLogin: () => Promise<string>;
   /** Web login step 2: exchange the pasted code/URL for tokens. */
@@ -71,7 +87,9 @@ function isRevoked(err: unknown): boolean {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [tokens, setTokens] = useState<TokenSet | null>(null);
+  const [hasSavedCredentials, setHasSavedCredentials] = useState(false);
   const tokensRef = useRef<TokenSet | null>(null);
+  const credsRef = useRef<Credentials | null>(null);
   const refreshInFlight = useRef<Promise<string | null> | null>(null);
 
   const redirectUri = makeRedirectUri({
@@ -98,49 +116,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    loadTokens().then((t) => {
+    Promise.all([loadTokens(), loadCredentials()]).then(([t, c]) => {
       tokensRef.current = t;
+      credsRef.current = c;
       setTokens(t);
+      setHasSavedCredentials(!!c);
       setReady(true);
     });
   }, []);
 
-  /** Refresh the access token. Never drops credentials on a network error —
-   *  only when the refresh token is genuinely revoked. */
+  /** Renew the access token. These PZŁ clients issue a ~30-day token and NO
+   *  refresh token, so renewal = a silent headless re-login with saved
+   *  credentials. Never drops the session on a network error (woods-friendly). */
   const doRefresh = useCallback(async (): Promise<string | null> => {
     const current = tokensRef.current;
-    if (!current?.refreshToken) return current?.accessToken ?? null;
+    const creds = credsRef.current;
+    if (!creds && !current?.refreshToken) return current?.accessToken ?? null;
     if (refreshInFlight.current) return refreshInFlight.current;
 
     refreshInFlight.current = (async () => {
       try {
-        // Token-bridge sessions (and web in general) refresh via a direct POST
-        // to the CORS-open token endpoint, using the issuing client.
-        if (current.clientId || IS_WEB) {
-          const next = await refreshBridgeToken(current);
-          if (next) await persist(next);
-          return next?.accessToken ?? null;
+        if (creds) {
+          const next = await headlessLogin(
+            creds.username,
+            creds.password,
+            creds.helpdesccode,
+          );
+          await persist(next);
+          return next.accessToken;
         }
-        const r = await refreshAsync(
-          { clientId: config.oidc.clientId, refreshToken: current.refreshToken },
-          discovery,
-        );
-        const next: TokenSet = {
-          accessToken: r.accessToken,
-          refreshToken: r.refreshToken ?? current.refreshToken,
-          idToken: r.idToken ?? current.idToken,
-          expiresAt: r.expiresIn ? Date.now() + r.expiresIn * 1000 : undefined,
-          clientId: current.clientId,
-        };
-        await persist(next);
-        return next.accessToken;
+        // Fallback for any token set that does carry a refresh token.
+        const next = await refreshBridgeToken(current!);
+        if (next) await persist(next);
+        return next?.accessToken ?? null;
       } catch (err) {
         if (isRevoked(err)) {
-          await persist(null); // real logout: token revoked server-side
+          await persist(null);
           return null;
         }
-        // Offline / transient: keep the (possibly stale) token, try again later.
-        return current.accessToken ?? null;
+        // Offline / transient: keep the (possibly stale) token, retry later.
+        return current?.accessToken ?? null;
       } finally {
         refreshInFlight.current = null;
       }
@@ -158,30 +173,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return doRefresh();
   }, [doRefresh]);
 
-  // Background refresh: periodic, on foreground, and on reconnect.
+  // Background re-login: periodic, on foreground, and on reconnect. Only does
+  // anything when we can renew unattended (saved credentials or a refresh token).
   useEffect(() => {
-    if (!ready || !tokens?.refreshToken) return;
+    if (!ready) return;
+    const canRenew = () => !!credsRef.current || !!tokensRef.current?.refreshToken;
 
-    const maybeRefresh = () => {
+    const maybeReauth = () => {
       const t = tokensRef.current;
-      if (!t?.refreshToken || !onlineManager.isOnline()) return;
-      const soon = !t.expiresAt || t.expiresAt - Date.now() < BACKGROUND_REFRESH_MS;
+      if (!t || !canRenew() || !onlineManager.isOnline()) return;
+      const soon = !t.expiresAt || t.expiresAt - Date.now() < REAUTH_WINDOW_MS;
       if (soon) void doRefresh();
     };
 
-    const interval = setInterval(maybeRefresh, BACKGROUND_REFRESH_MS);
+    const interval = setInterval(maybeReauth, BACKGROUND_CHECK_MS);
     const appSub = AppState.addEventListener('change', (s) => {
-      if (s === 'active') maybeRefresh();
+      if (s === 'active') maybeReauth();
     });
-    const onlineUnsub = onlineManager.subscribe(() => maybeRefresh());
-    maybeRefresh();
+    const onlineUnsub = onlineManager.subscribe(() => maybeReauth());
+    maybeReauth();
 
     return () => {
       clearInterval(interval);
       appSub.remove();
       onlineUnsub();
     };
-  }, [ready, tokens?.refreshToken, doRefresh]);
+  }, [ready, hasSavedCredentials, tokens?.accessToken, doRefresh]);
 
   const signIn = useCallback(async () => {
     // Native OAuth via pzl://auth (the registered mobile redirect).
@@ -208,6 +225,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         : undefined,
     });
   }, [request, promptAsync, redirectUri, persist]);
+
+  const signInWithPassword = useCallback(
+    async (
+      username: string,
+      password: string,
+      remember: boolean,
+      helpdesccode = '',
+    ) => {
+      const next = await headlessLogin(username, password, helpdesccode);
+      if (remember) {
+        const creds: Credentials = { username, password, helpdesccode };
+        credsRef.current = creds;
+        await saveCredentials(creds);
+        setHasSavedCredentials(true);
+      } else {
+        credsRef.current = null;
+        await clearCredentials();
+        setHasSavedCredentials(false);
+      }
+      await persist(next);
+    },
+    [persist],
+  );
+
+  const disableAutoLogin = useCallback(async () => {
+    credsRef.current = null;
+    setHasSavedCredentials(false);
+    await clearCredentials();
+  }, []);
 
   const beginWebLogin = useCallback(() => startWebLogin(), []);
 
@@ -243,6 +289,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     if (isDemo()) setDemo(false);
+    credsRef.current = null;
+    setHasSavedCredentials(false);
+    await clearCredentials();
     await persist(null);
   }, [persist]);
 
@@ -253,6 +302,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       tokens,
       signIn,
       signInDemo,
+      signInWithPassword,
+      hasSavedCredentials,
+      disableAutoLogin,
       beginWebLogin,
       completeWebLogin: completeWebLoginCb,
       signInWithToken,
@@ -264,6 +316,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       tokens,
       signIn,
       signInDemo,
+      signInWithPassword,
+      hasSavedCredentials,
+      disableAutoLogin,
       beginWebLogin,
       completeWebLoginCb,
       signInWithToken,

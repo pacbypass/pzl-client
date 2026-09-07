@@ -15,9 +15,13 @@ export const config = {
 
   oidc: {
     clientId: extra.oidcClientId ?? 'pzl-mobile-client',
-    // Native redirect the shipped app registers: `pzl://signed-in`
-    // (verified: pzl://signed-in → /login = registered; pzl://auth is rejected).
-    redirectScheme: 'pzl',
+    // Our app uses a UNIQUE scheme (`pzlrev://`) so it does NOT collide with the
+    // original PZŁ app, which registers `pzl://` (and uses `pzl://signed-in` as
+    // its OAuth redirect). We log in headlessly via the web client + an https
+    // redirect, so we never actually need a custom-scheme callback — this scheme
+    // only exists for expo-router/deep-linking and must stay distinct from the
+    // original app's `pzl://` to avoid an Android app-chooser collision.
+    redirectScheme: 'pzlrev',
     redirectPath: 'signed-in',
     // Exactly what the shipped mobile app requests.
     scopes: ['openid', 'profile', 'email'],

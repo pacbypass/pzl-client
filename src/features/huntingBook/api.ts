@@ -34,15 +34,23 @@ export type HuntEntry = z.infer<typeof HuntEntrySchema> & {
   _localOnly?: boolean;
 };
 
-const ListSchema = z.union([
-  z.array(HuntEntrySchema),
-  z.object({ content: z.array(HuntEntrySchema) }).passthrough(),
-]);
-
 function normalizeList(data: unknown): HuntEntry[] {
-  const parsed = ListSchema.safeParse(data);
-  if (!parsed.success) return [];
-  return Array.isArray(parsed.data) ? parsed.data : parsed.data.content;
+  // Live API wraps lists as { result, total }; older/other shapes use { content }.
+  const arr = Array.isArray(data)
+    ? data
+    : Array.isArray((data as { result?: unknown[] })?.result)
+      ? (data as { result: unknown[] }).result
+      : Array.isArray((data as { content?: unknown[] })?.content)
+        ? (data as { content: unknown[] }).content
+        : [];
+  return arr
+    .map((raw) => {
+      const o = { ...(raw as Record<string, unknown>) };
+      if (o.id != null) o.id = String(o.id); // ids may come back numeric
+      const parsed = HuntEntrySchema.safeParse(o);
+      return parsed.success ? parsed.data : null;
+    })
+    .filter((x): x is HuntEntry => x !== null);
 }
 
 export function isEntryActive(e: HuntEntry): boolean {
@@ -57,13 +65,126 @@ export const huntingBookKeys = {
   active: (unitId: string) => ['huntingBook', 'active', unitId] as const,
 };
 
-export function useActiveHunts(unitId: string) {
+/**
+ * A hunting permit ("upoważnienie") held by the current user, from
+ * `/authorizations/me?year=`. Each is tied to one hunting district; the sign-up
+ * form only offers those matching the chosen obwód.
+ */
+export type MyAuthorization = {
+  id: number;
+  number: string; // e.g. "17/185/26-27"
+  huntingDistrictId: number;
+  huntingDistrictNumber?: string;
+  startDate?: string;
+  endDate?: string;
+  statusName?: string;
+};
+
+export function useMyAuthorizations(unitId: string, year: number | undefined) {
   return useQuery({
-    queryKey: huntingBookKeys.active(unitId),
-    enabled: !!unitId,
+    queryKey: ['authorizations', 'me', unitId, year],
+    enabled: !!unitId && !!year,
+    staleTime: 1000 * 60 * 10,
     queryFn: async () => {
-      const data = await apiRequest(endpoints.huntingBook(unitId).huntings, {
-        query: { active: true },
+      const data = await apiRequest(endpoints.authorizations(unitId).mine, {
+        query: { year },
+      });
+      const arr = Array.isArray(data)
+        ? data
+        : ((data as { result?: unknown[] })?.result ?? []);
+      return arr
+        .map((r) => r as Record<string, unknown>)
+        .filter((r) => r.id != null)
+        .map(
+          (r): MyAuthorization => ({
+            id: Number(r.id),
+            number: String(r.number ?? r.id),
+            huntingDistrictId: Number(r.huntingDistrictId),
+            huntingDistrictNumber: r.huntingDistrictNumber
+              ? String(r.huntingDistrictNumber)
+              : undefined,
+            startDate: r.startDate ? String(r.startDate) : undefined,
+            endDate: r.endDate ? String(r.endDate) : undefined,
+            statusName: r.statusName ? String(r.statusName) : undefined,
+          }),
+        );
+    },
+  });
+}
+
+/**
+ * Permits held by ANOTHER hunter — for booking someone else ("Inny myśliwy").
+ * `/persons/hunters/{hunterId}/permits` → `[{id, number, huntingDistrictId}]`.
+ * Same {id} shape as the self permits, so the sign-up form treats both alike.
+ */
+export function useHunterPermits(unitId: string, hunterId: string | undefined) {
+  return useQuery({
+    queryKey: ['hunterPermits', unitId, hunterId],
+    enabled: !!unitId && !!hunterId,
+    staleTime: 1000 * 60 * 10,
+    queryFn: async () => {
+      const data = await apiRequest(
+        endpoints.hunters(unitId).permits(hunterId as string),
+      );
+      const arr = Array.isArray(data)
+        ? data
+        : ((data as { result?: unknown[] })?.result ?? []);
+      return arr
+        .map((r) => r as Record<string, unknown>)
+        .filter((r) => r.id != null)
+        .map(
+          (r): MyAuthorization => ({
+            id: Number(r.id),
+            number: String(r.number ?? r.id),
+            huntingDistrictId: Number(r.huntingDistrictId),
+            huntingDistrictNumber: r.huntingDistrictNumber
+              ? String(r.huntingDistrictNumber)
+              : undefined,
+          }),
+        );
+    },
+  });
+}
+
+/** Rewiry (sub-sectors) of a hunting district, as {id, name} picker options. */
+export type RewirOption = { id: string; name: string };
+
+export function useRewirOptions(unitId: string, districtId: string | undefined) {
+  return useQuery({
+    queryKey: ['rewirOptions', unitId, districtId],
+    enabled: !!unitId && !!districtId,
+    staleTime: 1000 * 60 * 60,
+    queryFn: async () => {
+      const data = await apiRequest(
+        `/units/${unitId}/hunting-districts/grounds/all?districtIds=${encodeURIComponent(
+          districtId as string,
+        )}`,
+      );
+      const arr = Array.isArray(data)
+        ? data
+        : ((data as { result?: unknown[] })?.result ?? []);
+      return arr
+        .map((r) => r as Record<string, unknown>)
+        .map((r): RewirOption => ({
+          id: String(r.huntingGroundId ?? r.id ?? ''),
+          name: String(r.name ?? ''),
+        }))
+        .filter((o) => o.id)
+        .sort((a, b) =>
+          a.name.localeCompare(b.name, 'pl', { numeric: true }),
+        );
+    },
+  });
+}
+
+export function useActiveHunts(unitId: string, year: number | undefined) {
+  return useQuery({
+    queryKey: [...huntingBookKeys.active(unitId), year],
+    enabled: !!unitId && !!year,
+    queryFn: async () => {
+      // `/huntings/me?year=` — the current user's hunting entries for the season.
+      const data = await apiRequest(endpoints.huntingBook(unitId).mine, {
+        query: { year },
       });
       return normalizeList(data);
     },
@@ -73,15 +194,30 @@ export function useActiveHunts(unitId: string) {
 
 export type SignUpInput = {
   unitId: string;
-  hunterId?: string; // omit => self (solo sign-up)
+  /** true when booking someone else ("Inny myśliwy"). */
+  anotherHunter: boolean;
+  /** Person id of the hunter: self = token `person_id`, other = selected. */
+  hunterId: number;
   hunterName?: string;
   huntingDistrictId?: string;
   huntingDistrictName?: string;
-  standId?: string;
-  standNumber?: string;
-  animalTypeId?: string;
-  animalTypeName?: string;
+  /** Selected permits ("upoważnienia") — server field `permitIds` (bare ids). */
+  permitIds: number[];
+  permitLabel?: string; // for the optimistic row (e.g. "17/185/26-27")
+  /** Rewir (sub-sector) ids → server field `huntingGroundIds`. */
+  huntingGroundIds: number[];
+  huntingPlaceName?: string; // e.g. "17"
   startTimestamp: string;
+  endTimestamp: string;
+  notes?: string;
+  /**
+   * "Potwierdzam uzyskanie zgody innych myśliwych na wspólne korzystanie z
+   * wskazanego rewiru." Required by the server when the chosen rewir is already
+   * OCCUPIED ("Zgoda myśliwych jest wymagana gdy chcesz skorzystać z zajętego
+   * rewiru!"). Nothing to do with booking another hunter — must be the user's
+   * own explicit choice, never auto-asserted.
+   */
+  confirmOtherHuntersConsent: boolean;
 };
 
 export type EndHuntInput = {
@@ -107,16 +243,16 @@ export function useSignUpHunt(unitId: string) {
       await qc.cancelQueries({ queryKey: key });
       const previous = qc.getQueryData<HuntEntry[]>(key);
       const optimistic: HuntEntry = {
-        id: `local:${input.startTimestamp}:${input.hunterId ?? 'self'}`,
-        hunterId: input.hunterId,
+        id: `local:${input.startTimestamp}:${input.hunterId}`,
+        hunterId: String(input.hunterId),
         hunterName: input.hunterName ?? 'Ja',
         huntingDistrictId: input.huntingDistrictId,
         huntingDistrictName: input.huntingDistrictName,
-        standId: input.standId,
-        standNumber: input.standNumber,
-        animalTypeId: input.animalTypeId,
-        animalTypeName: input.animalTypeName,
+        standNumber: input.huntingPlaceName
+          ? `Rewir: ${input.huntingPlaceName}`
+          : undefined,
         startTimestamp: input.startTimestamp,
+        endTimestamp: input.endTimestamp,
         isActive: true,
         status: 'ACTIVE',
         _pending: true,
@@ -130,6 +266,10 @@ export function useSignUpHunt(unitId: string) {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: huntingBookKeys.active(unitId) });
+      // The książka list is a separate infinite query (['book', unitId, …]) —
+      // invalidate it too so the freshly created hunt appears with the real
+      // server flags rather than only after the 2-min staleTime elapses.
+      qc.invalidateQueries({ queryKey: ['book', unitId] });
     },
   });
 }

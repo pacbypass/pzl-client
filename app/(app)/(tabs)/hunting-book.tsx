@@ -32,9 +32,13 @@ import {
 } from '@/features/huntingBook/lookups';
 import { useUnits } from '@/units/UnitProvider';
 
-/** Pozyskanie — the harvest row (and the shots that produced it) reads red, so
- *  a hunt that actually took an animal stands out in the list. */
-const HARVEST_COLOR = '#c62828';
+/**
+ * Pozyskanie — the harvest row (and the shots that produced it) reads in a deep
+ * amber, so a hunt that actually took an animal stands out against the green
+ * theme and the grey "zakończone" text, without colliding with the red that
+ * means "po czasie".
+ */
+const HARVEST_COLOR = '#a35200';
 
 function fmt(iso?: string | null): string {
   if (!iso) return '—';
@@ -373,6 +377,6 @@ const styles = StyleSheet.create({
   hunter: { fontWeight: '700', flex: 1 },
   struck: { textDecorationLine: 'line-through', color: '#6b6b6b' },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  harvest: { color: HARVEST_COLOR },
+  harvest: { color: HARVEST_COLOR, fontWeight: '600' },
   muted: { opacity: 0.6 },
 });

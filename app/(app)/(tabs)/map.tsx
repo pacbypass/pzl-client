@@ -3,11 +3,9 @@ import { useFocusEffect } from 'expo-router';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import * as Location from 'expo-location';
 import {
-  ActivityIndicator,
   Appbar,
   Button,
   Checkbox,
-  Chip,
   Divider,
   IconButton,
   List,
@@ -178,7 +176,7 @@ export default function MapScreen() {
   // itself (książka ewidencji, every obwód of the koło), so the highlight is
   // right even if the user never opened the Polowania tab.
   const occupied = useOccupiedRewirs(unitId, year, districtOpts, settings.showOccupied);
-  const [occupiedOpen, setOccupiedOpen] = useState(false);
+  const [selectedRewir, setSelectedRewir] = useState<OccupiedRewir | null>(null);
 
   // Refresh occupancy when the map comes back into view, but only once it has
   // gone stale — tab screens stay mounted, so react-query's refetchOnMount
@@ -246,7 +244,7 @@ export default function MapScreen() {
     };
   }, [rewirs.data, isOccupied, occupied.rewirs.length, settings.showOccupied]);
 
-  /** Centre of each rewir polygon, for "tap an entry → fly there". */
+  /** Centre of each rewir polygon — where the "kto tu poluje" marker goes. */
   const rewirCenters = useMemo(() => {
     const byKey = new Map<string, MapCamera>();
     const fc = rewirs.data as GeoJSON.FeatureCollection | undefined;
@@ -266,6 +264,46 @@ export default function MapScreen() {
     }
     return byKey;
   }, [rewirs.data]);
+
+  /**
+   * One tappable marker in the middle of every taken rewir — tapping it says who
+   * is hunting there. It sits ON the red polygon, and because the tap handler
+   * picks whichever is CLOSER (marker or device), an ambona inside the same
+   * rewir stays selectable as before.
+   */
+  const occupiedMarkers = useMemo(() => {
+    if (!settings.showOccupied) return [];
+    const out: { rewir: OccupiedRewir; longitude: number; latitude: number }[] = [];
+    for (const r of occupied.rewirs) {
+      const cam =
+        r.districtKeys.map((k) => rewirCenters.get(`${k}|${r.key}`)).find(Boolean) ??
+        rewirCenters.get(r.key);
+      if (cam) out.push({ rewir: r, longitude: cam.longitude, latitude: cam.latitude });
+    }
+    return out;
+  }, [occupied.rewirs, rewirCenters, settings.showOccupied]);
+
+  const occupiedPointsGeo = useMemo(
+    () => ({
+      type: 'FeatureCollection' as const,
+      features: occupiedMarkers.map((m) => ({
+        type: 'Feature' as const,
+        geometry: { type: 'Point' as const, coordinates: [m.longitude, m.latitude] },
+        properties: { color: OCCUPIED_COLOR, name: m.rewir.name },
+      })),
+    }),
+    [occupiedMarkers],
+  );
+
+  // A selected rewir that stops being occupied (someone wrote out) must not stay
+  // pinned open with stale names.
+  useEffect(() => {
+    if (!selectedRewir) return;
+    const fresh = occupied.rewirs.find(
+      (r) => r.key === selectedRewir.key && r.districtId === selectedRewir.districtId,
+    );
+    if (fresh !== selectedRewir) setSelectedRewir(fresh ?? null);
+  }, [occupied.rewirs, selectedRewir]);
 
   const activeRasterKeys = useMemo(() => {
     const keys = new Set<string>([settings.baseLayerKey]);
@@ -314,6 +352,15 @@ export default function MapScreen() {
         color: DEVICE_COLOR,
       });
     }
+    if (occupiedPointsGeo.features.length) {
+      out.push({
+        key: 'occupied-markers',
+        kind: 'point',
+        data: occupiedPointsGeo,
+        color: OCCUPIED_COLOR,
+        circleRadius: 10, // bigger than a device dot — it is the "who is here" pin
+      });
+    }
     return out;
     // Depend on the specific fields used — NOT the whole `settings` object, which
     // changes on every camera move (camera is persisted in settings). Depending
@@ -328,6 +375,7 @@ export default function MapScreen() {
     districts.data,
     rewirs.data,
     occupiedGeo,
+    occupiedPointsGeo,
     devices.data,
   ]);
 
@@ -373,17 +421,39 @@ export default function MapScreen() {
   };
 
   const onMapPress = (coord: { longitude: number; latitude: number }) => {
-    if (!devices.data || !settings.showDevices) {
-      setSelected(null);
-      return;
-    }
     const zoom = settings.camera?.zoom ?? 12;
     const maxDist = 80 / Math.pow(2, zoom); // tap tolerance scales with zoom
-    // Only consider devices that are actually VISIBLE (filtered), so a tap never
-    // selects a type the user has turned off (e.g. finding a lizawka while only
-    // ambony/zwyżki are shown).
-    const visible = visibleDevices(devices.data, settings.deviceTypeIds);
-    setSelected(nearestDevice(visible, coord, maxDist));
+
+    // Nearest "kto tu poluje" marker…
+    let rewirHit: { rewir: OccupiedRewir; dist: number } | null = null;
+    for (const m of occupiedMarkers) {
+      const d = Math.hypot(m.longitude - coord.longitude, m.latitude - coord.latitude);
+      if (d < maxDist && (!rewirHit || d < rewirHit.dist)) {
+        rewirHit = { rewir: m.rewir, dist: d };
+      }
+    }
+
+    // …and nearest hunting device. Only devices that are actually VISIBLE
+    // (filtered) count, so a tap never selects a type the user turned off.
+    const visible =
+      devices.data && settings.showDevices
+        ? visibleDevices(devices.data, settings.deviceTypeIds)
+        : [];
+    const device = nearestDevice(visible, coord, maxDist);
+    const dc = device?.marker?.coordinates;
+    const deviceDist = dc
+      ? Math.hypot(dc[0] - coord.longitude, dc[1] - coord.latitude)
+      : Infinity;
+
+    // Closer one wins, so an ambona standing inside a taken rewir is still
+    // reachable even though the rewir marker sits in the middle of it.
+    if (rewirHit && rewirHit.dist <= deviceDist) {
+      setSelectedRewir(rewirHit.rewir);
+      setSelected(null);
+    } else {
+      setSelected(device);
+      setSelectedRewir(null);
+    }
   };
 
   const onRefresh = () => {
@@ -407,18 +477,9 @@ export default function MapScreen() {
         : [...settings.deviceTypeIds, typeId],
     });
 
-  /** Fly to a rewir picked from the occupied list. */
-  const focusRewir = (r: OccupiedRewir) => {
-    const cam =
-      r.districtKeys.map((k) => rewirCenters.get(`${k}|${r.key}`)).find(Boolean) ??
-      rewirCenters.get(r.key);
-    if (!cam) {
-      setSnack(`Brak granic rewiru ${r.name} na mapie.`);
-      return;
-    }
-    setOccupiedOpen(false);
-    flyOnce(cam);
-  };
+  const selectedMarker = selectedRewir
+    ? occupiedMarkers.find((m) => m.rewir === selectedRewir)
+    : null;
 
   if (!loaded) return <View style={styles.root} />;
   const fetching =
@@ -455,36 +516,11 @@ export default function MapScreen() {
                   longitude: selected.marker.coordinates[0],
                   latitude: selected.marker.coordinates[1],
                 }
-              : null
+              : selectedMarker
+                ? { longitude: selectedMarker.longitude, latitude: selectedMarker.latitude }
+                : null
           }
         />
-
-        {settings.showOccupied ? (
-          <View style={styles.topLeft} pointerEvents="box-none">
-            <Chip
-              compact
-              icon={
-                occupied.query.isFetching
-                  ? 'progress-clock'
-                  : occupied.rewirs.length
-                    ? 'target'
-                    : 'check-circle-outline'
-              }
-              onPress={() => setOccupiedOpen(true)}
-              style={occupied.rewirs.length ? styles.chipTaken : undefined}
-              textStyle={occupied.rewirs.length ? styles.chipTakenText : undefined}
-              selectedColor={occupied.rewirs.length ? '#ffffff' : undefined}
-            >
-              {occupied.query.isPending || (occupied.query.isFetching && !occupied.query.data)
-                ? 'Sprawdzam rewiry…'
-                : occupied.query.isError && !occupied.query.data
-                  ? 'Brak danych o polowaniach'
-                  : occupied.rewirs.length
-                    ? `Zajęte rewiry: ${occupied.rewirs.length}`
-                    : 'Wszystkie rewiry wolne'}
-            </Chip>
-          </View>
-        ) : null}
 
         <View style={styles.topRight} pointerEvents="box-none">
           <IconButton icon="layers" mode="contained" size={24} onPress={() => setPanelOpen((o) => !o)} style={styles.fab} />
@@ -499,6 +535,31 @@ export default function MapScreen() {
                 <Text variant="labelSmall">{t.label}</Text>
               </View>
             ))}
+          </Surface>
+        ) : null}
+
+        {selectedRewir ? (
+          <Surface style={styles.deviceCard} elevation={4}>
+            <View style={styles.deviceHeader}>
+              <View style={[styles.legendDot, styles.occupiedDot]} />
+              <View style={styles.flex1}>
+                <Text variant="titleMedium" style={styles.bold}>
+                  Rewir {selectedRewir.name}
+                </Text>
+                <Text variant="bodySmall" style={styles.muted}>
+                  Obwód {selectedRewir.districtLabel} · zajęty
+                </Text>
+              </View>
+              <IconButton icon="close" size={20} onPress={() => setSelectedRewir(null)} />
+            </View>
+            <View style={styles.hunters}>
+              {selectedRewir.hunters.map((h) => (
+                <Text key={h.id} variant="bodyMedium">
+                  {h.name} · {h.upcoming ? 'zapisany od' : 'od'} {fmtTime(h.startDate)}
+                  {h.overdue ? ' · po czasie' : ''}
+                </Text>
+              ))}
+            </View>
           </Surface>
         ) : null}
 
@@ -520,77 +581,6 @@ export default function MapScreen() {
           </Surface>
         ) : null}
       </View>
-
-      {occupiedOpen ? (
-        <Portal>
-          <SafeAreaView style={styles.panelWrap} pointerEvents="box-none">
-            <Surface style={styles.panel} elevation={4}>
-              <View style={styles.panelHeader}>
-                <View style={styles.flex1}>
-                  <Text variant="titleMedium" style={styles.bold}>
-                    Zajęte rewiry
-                  </Text>
-                  <Text variant="bodySmall" style={styles.muted}>
-                    Z książki ewidencji — polowania jeszcze niezakończone
-                  </Text>
-                  <View style={styles.panelAge}>
-                    <DataAge
-                      updatedAt={occupied.query.dataUpdatedAt}
-                      isFetching={occupied.query.isFetching}
-                    />
-                  </View>
-                </View>
-                <IconButton icon="close" onPress={() => setOccupiedOpen(false)} />
-              </View>
-              <Divider />
-              <ScrollView>
-                {occupied.rewirs.length === 0 ? (
-                  <Text variant="bodySmall" style={styles.note}>
-                    {occupied.query.isError && !occupied.query.data
-                      ? 'Nie udało się pobrać książki ewidencji.'
-                      : 'Nikt nie jest teraz wpisany na polowanie.'}
-                  </Text>
-                ) : (
-                  occupied.rewirs.map((r) => (
-                    <List.Item
-                      key={`${r.districtId}|${r.name}`}
-                      title={`Rewir ${r.name}`}
-                      titleStyle={styles.bold}
-                      description={[
-                        r.districtLabel,
-                        ...r.hunters.map(
-                          (h) =>
-                            `${h.name} · ${h.upcoming ? 'zapisany od' : 'od'} ${fmtTime(
-                              h.startDate,
-                            )}` + (h.overdue ? ' · po czasie' : ''),
-                        ),
-                      ].join('\n')}
-                      descriptionNumberOfLines={r.hunters.length + 2}
-                      left={(props) => (
-                        <List.Icon {...props} icon="target" color={OCCUPIED_COLOR} />
-                      )}
-                      right={(props) => <List.Icon {...props} icon="map-search-outline" />}
-                      onPress={() => focusRewir(r)}
-                    />
-                  ))
-                )}
-                {occupied.unplaced > 0 ? (
-                  <Text variant="bodySmall" style={styles.note}>
-                    +{occupied.unplaced} trwających polowań bez wskazanego rewiru.
-                  </Text>
-                ) : null}
-                <Button
-                  icon="refresh"
-                  onPress={() => occupied.query.refetch()}
-                  disabled={occupied.query.isFetching}
-                >
-                  Odśwież polowania
-                </Button>
-              </ScrollView>
-            </Surface>
-          </SafeAreaView>
-        </Portal>
-      ) : null}
 
       {panelOpen ? (
         <Portal>
@@ -699,9 +689,8 @@ const styles = StyleSheet.create({
   age: { flex: 1, alignItems: 'flex-end', paddingRight: 4 },
   mapArea: { flex: 1 },
   topRight: { position: 'absolute', top: 8, right: 4 },
-  topLeft: { position: 'absolute', top: 14, left: 12, flexDirection: 'row' },
-  chipTaken: { backgroundColor: OCCUPIED_COLOR },
-  chipTakenText: { color: '#ffffff' },
+  occupiedDot: { backgroundColor: OCCUPIED_COLOR, width: 14, height: 14, borderRadius: 7 },
+  hunters: { paddingHorizontal: 14, paddingBottom: 12, gap: 2 },
   fab: { margin: 6, marginBottom: 0 },
   legend: {
     position: 'absolute',

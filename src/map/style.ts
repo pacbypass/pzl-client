@@ -20,6 +20,8 @@ export type VectorOverlay = {
   fillOpacity?: number;
   /** polygon outline width (default 2) */
   lineWidth?: number;
+  /** point marker radius (default 6) */
+  circleRadius?: number;
 };
 
 /**
@@ -100,7 +102,7 @@ export function buildMapStyle(
         type: 'circle',
         source: src,
         paint: {
-          'circle-radius': 6,
+          'circle-radius': ov.circleRadius ?? 6,
           // Per-feature `color` (e.g. device type) if present, else the layer color.
           'circle-color': ['coalesce', ['get', 'color'], ov.color],
           'circle-stroke-color': '#ffffff',

@@ -144,7 +144,7 @@ export function HuntingMap({
             <CircleLayer
               id={`geo-${ov.key}-circle`}
               style={{
-                circleRadius: 6,
+                circleRadius: ov.circleRadius ?? 6,
                 circleColor: ['coalesce', ['get', 'color'], ov.color] as never,
                 circleStrokeColor: '#ffffff',
                 circleStrokeWidth: 2,

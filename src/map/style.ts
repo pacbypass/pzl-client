@@ -16,6 +16,10 @@ export type VectorOverlay = {
   color: string;
   /** property names to try for a text label (polygons only). */
   labelKeys?: string[];
+  /** polygon fill strength — raised for the "taken rewir" overlay (default .12) */
+  fillOpacity?: number;
+  /** polygon outline width (default 2) */
+  lineWidth?: number;
 };
 
 /**
@@ -50,27 +54,20 @@ export function buildMapStyle(
     const src = `geo-${ov.key}`;
     sources[src] = { type: 'geojson', data: ov.data };
     if (ov.kind === 'polygon') {
-      // A feature tagged `occupied` (a rewir someone is hunting in right now)
-      // paints red; everything else uses the overlay's own colour. Mirrors the
-      // native renderer's paint so both platforms show the same thing.
-      const occupied = ['==', ['get', 'occupied'], true];
+      // Plain, per-overlay paint — no data-driven expressions. The taken rewiry
+      // are their own overlay (red, stronger fill) drawn on top of the plain
+      // ones, so the highlight can never depend on expression support.
       layers.push({
         id: `${src}-fill`,
         type: 'fill',
         source: src,
-        paint: {
-          'fill-color': ['case', occupied, OCCUPIED_COLOR, ov.color],
-          'fill-opacity': ['case', occupied, 0.4, 0.12],
-        },
+        paint: { 'fill-color': ov.color, 'fill-opacity': ov.fillOpacity ?? 0.12 },
       });
       layers.push({
         id: `${src}-line`,
         type: 'line',
         source: src,
-        paint: {
-          'line-color': ['case', occupied, OCCUPIED_COLOR, ov.color],
-          'line-width': ['case', occupied, 3, 2],
-        },
+        paint: { 'line-color': ov.color, 'line-width': ov.lineWidth ?? 2 },
       });
       if (ov.labelKeys?.length) {
         layers.push({

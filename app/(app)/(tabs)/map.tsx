@@ -216,38 +216,31 @@ export default function MapScreen() {
     [occupiedByName],
   );
 
-  /** Rewir polygons tagged with `occupied`, so the layer can paint them red. */
-  const rewirsGeo = useMemo(() => {
+  /**
+   * The polygons of the rewiry that are taken — drawn as their OWN red overlay
+   * on top of the plain rewir layer, so the highlight is plain paint rather
+   * than a data-driven style expression (and shows even with the rewir layer
+   * switched off).
+   */
+  const occupiedGeo = useMemo(() => {
     const fc = rewirs.data as GeoJSON.FeatureCollection | undefined;
-    if (!fc) return undefined;
-    const tag = (loose: boolean): GeoJSON.FeatureCollection => ({
-      ...fc,
-      features: fc.features.map((f) => ({
-        ...f,
-        properties: {
-          ...(f.properties ?? {}),
-          occupied:
-            settings.showOccupied &&
-            isOccupied(
-              String(f.properties?.name ?? ''),
-              String(f.properties?.districtId ?? ''),
-              loose,
-            ),
-        },
-      })),
-    });
-    const strict = tag(false);
+    if (!fc || !settings.showOccupied || occupied.rewirs.length === 0) return undefined;
+    const pick = (loose: boolean) =>
+      fc.features.filter((f) =>
+        isOccupied(
+          String(f.properties?.name ?? ''),
+          String(f.properties?.districtId ?? ''),
+          loose,
+        ),
+      );
     // Nothing matched although hunts ARE running: the polygons' district ids
-    // don't line up with the book's. Fall back to matching on the rewir number
-    // alone rather than showing an empty map.
-    if (
-      settings.showOccupied &&
-      occupied.rewirs.length > 0 &&
-      !strict.features.some((f) => f.properties?.occupied)
-    ) {
-      return tag(true);
-    }
-    return strict;
+    // don't line up with the book's. Fall back to matching on the rewir label
+    // alone rather than highlighting nothing.
+    const features = pick(false);
+    return {
+      type: 'FeatureCollection' as const,
+      features: features.length ? features : pick(true),
+    };
   }, [rewirs.data, isOccupied, occupied.rewirs.length, settings.showOccupied]);
 
   /** Centre of each rewir polygon, for "tap an entry → fly there". */
@@ -288,13 +281,26 @@ export default function MapScreen() {
         labelKeys: ['number'],
       });
     }
-    if (settings.showRewirs && rewirsGeo) {
+    if (settings.showRewirs && rewirs.data) {
       out.push({
         key: 'rewirs',
         kind: 'polygon',
-        data: rewirsGeo,
+        data: rewirs.data,
         color: REWIR_COLOR,
         labelKeys: ['name'],
+      });
+    }
+    if (occupiedGeo) {
+      out.push({
+        key: 'rewirs-occupied',
+        kind: 'polygon',
+        data: occupiedGeo,
+        color: OCCUPIED_COLOR,
+        fillOpacity: 0.45,
+        lineWidth: 3,
+        // The plain rewir layer already labels every polygon; only label here
+        // when it is switched off, so the number is never drawn twice.
+        labelKeys: settings.showRewirs ? undefined : ['name'],
       });
     }
     if (settings.showDevices && devices.data) {
@@ -317,7 +323,8 @@ export default function MapScreen() {
     settings.showDevices,
     settings.deviceTypeIds,
     districts.data,
-    rewirsGeo,
+    rewirs.data,
+    occupiedGeo,
     devices.data,
   ]);
 

@@ -8,7 +8,15 @@ import {
   Text,
   useTheme,
 } from 'react-native-paper';
+import Constants from 'expo-constants';
 import { clearLogs, useRequestLogs, type LogEntry } from '@/api/requestLog';
+
+/** Which build is this? Stamped into the config at build time (app.config.js) —
+ *  the answer to "did the phone actually install the new APK?". */
+const build = (Constants.expoConfig?.extra ?? {}) as Record<string, string>;
+const BUILD_LABEL = `${Constants.expoConfig?.version ?? '?'} · ${
+  build.buildStamp ?? 'dev'
+} · ${build.buildTime ?? '—'}`;
 
 function statusColor(e: LogEntry, primary: string, outline: string): string {
   if (e.error) return '#b00020';
@@ -108,9 +116,15 @@ export default function DebugScreen() {
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.background }]}>
       <Appbar.Header mode="small" elevated>
-        <Appbar.Content title="Debug — zapytania" subtitle={`${logs.length} ostatnich`} />
+        <Appbar.Content title="Debug — zapytania" subtitle={BUILD_LABEL} />
         <Appbar.Action icon="trash-can-outline" onPress={clearLogs} disabled={logs.length === 0} />
       </Appbar.Header>
+
+      <View style={styles.buildRow}>
+        <Text variant="labelSmall" style={styles.muted}>
+          Wersja aplikacji: {BUILD_LABEL} · {logs.length} zapytań
+        </Text>
+      </View>
 
       {logs.length === 0 ? (
         <View style={styles.empty}>
@@ -132,6 +146,7 @@ export default function DebugScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  buildRow: { paddingHorizontal: 12, paddingTop: 8 },
   list: { padding: 12, gap: 8 },
   card: { borderRadius: 12 },
   rowContent: { gap: 4, paddingVertical: 8 },

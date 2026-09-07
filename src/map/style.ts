@@ -6,6 +6,9 @@ import {
 } from '@/map/layers';
 import type { FeatureCollection } from '@/features/map/geo';
 
+/** Fill/outline of a rewir that is currently taken ("zajęty"). */
+export const OCCUPIED_COLOR = '#c62828';
+
 export type VectorOverlay = {
   key: string;
   kind: 'polygon' | 'point';
@@ -47,17 +50,27 @@ export function buildMapStyle(
     const src = `geo-${ov.key}`;
     sources[src] = { type: 'geojson', data: ov.data };
     if (ov.kind === 'polygon') {
+      // A feature tagged `occupied` (a rewir someone is hunting in right now)
+      // paints red; everything else uses the overlay's own colour. Mirrors the
+      // native renderer's paint so both platforms show the same thing.
+      const occupied = ['==', ['get', 'occupied'], true];
       layers.push({
         id: `${src}-fill`,
         type: 'fill',
         source: src,
-        paint: { 'fill-color': ov.color, 'fill-opacity': 0.12 },
+        paint: {
+          'fill-color': ['case', occupied, OCCUPIED_COLOR, ov.color],
+          'fill-opacity': ['case', occupied, 0.4, 0.12],
+        },
       });
       layers.push({
         id: `${src}-line`,
         type: 'line',
         source: src,
-        paint: { 'line-color': ov.color, 'line-width': 2 },
+        paint: {
+          'line-color': ['case', occupied, OCCUPIED_COLOR, ov.color],
+          'line-width': ['case', occupied, 3, 2],
+        },
       });
       if (ov.labelKeys?.length) {
         layers.push({

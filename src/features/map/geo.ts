@@ -106,14 +106,26 @@ export function useRewirsGeo(
         features: arr
           .map((g) => g as Record<string, unknown>)
           .filter((g) => g.geometry && typeof g.geometry === 'object')
-          .map((g) => ({
-            type: 'Feature' as const,
-            geometry: g.geometry,
-            properties: {
-              name: String(g.name ?? ''),
-              color: (g.color as string) ?? '#007fff',
-            },
-          })),
+          .map((g) => {
+            // The API ships a ready-made `centerPoint` per rewir — used to fly
+            // the camera to one picked from the occupied list.
+            const c = (g.centerPoint as { coordinates?: number[] } | undefined)
+              ?.coordinates;
+            return {
+              type: 'Feature' as const,
+              geometry: g.geometry,
+              properties: {
+                // NOT always a number — the live API names rewiry "13 C", "3b".
+                name: String(g.name ?? ''),
+                color: (g.color as string) ?? '#007fff',
+                // Which obwód the rewir belongs to — rewir labels repeat across
+                // obwody, so the occupied-highlight needs it to tell them apart.
+                districtId: String(g.huntingDistrictId ?? g.districtId ?? ''),
+                centerLng: c?.[0],
+                centerLat: c?.[1],
+              },
+            };
+          }),
       } as FeatureCollection;
     },
   });
@@ -147,4 +159,28 @@ export function useGroundsGeo(unitId: string, enabled: boolean) {
     queryFn: async () =>
       toFeatureCollection(await apiRequest(endpoints.geo(unitId).groundsMap)),
   });
+}
+
+/**
+ * Rough centre of a polygon feature (mean of its positions) — good enough to
+ * fly the camera to a rewir when the user taps it in a list.
+ */
+export function centroidOf(
+  geometry: unknown,
+): { longitude: number; latitude: number } | null {
+  let sumLng = 0;
+  let sumLat = 0;
+  let n = 0;
+  const walk = (node: unknown) => {
+    if (!Array.isArray(node)) return;
+    if (typeof node[0] === 'number' && typeof node[1] === 'number') {
+      sumLng += node[0] as number;
+      sumLat += node[1] as number;
+      n++;
+      return;
+    }
+    for (const child of node) walk(child);
+  };
+  walk((geometry as { coordinates?: unknown })?.coordinates);
+  return n ? { longitude: sumLng / n, latitude: sumLat / n } : null;
 }

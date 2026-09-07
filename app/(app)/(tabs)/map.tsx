@@ -1,12 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
-import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import * as Location from 'expo-location';
 import {
+  ActivityIndicator,
   Appbar,
   Button,
   Checkbox,
+  Chip,
   Divider,
   IconButton,
   List,
@@ -21,10 +22,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { HuntingMap } from '@/map/HuntingMap';
 import type { MapCamera } from '@/map/HuntingMap';
 import { BASE_LAYERS, OVERLAY_LAYERS } from '@/map/layers';
-import { type VectorOverlay } from '@/map/style';
+import { OCCUPIED_COLOR, type VectorOverlay } from '@/map/style';
 import { DataAge } from '@/components/offline';
 import { useMapSettings } from '@/features/map/settings';
-import { useDistrictsGeo, useRewirsGeo } from '@/features/map/geo';
+import { centroidOf, useDistrictsGeo, useRewirsGeo } from '@/features/map/geo';
 import {
   deviceColor,
   devicesToGeo,
@@ -35,15 +36,28 @@ import {
 } from '@/features/map/devices';
 import { useHuntingDistrictOptions, useHuntingYears } from '@/features/huntingBook/lookups';
 import {
-  isCurrentlyHunting,
-  rewirName,
-  type BookPage,
-} from '@/features/huntingBook/book';
+  useOccupiedRewirs,
+  type OccupiedRewir,
+} from '@/features/map/occupied';
+import { normalizeRewir } from '@/features/huntingBook/book';
 import { useUnits } from '@/units/UnitProvider';
 
 const DISTRICT_COLOR = '#2f6b26';
 const REWIR_COLOR = '#1565c0';
 const DEVICE_COLOR = '#f57c00';
+
+/** Short local time of a hunt's start/end ("07.09, 14:20"). */
+function fmtTime(iso?: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('pl-PL', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 function nearestDevice(
   devices: Device[],
@@ -93,9 +107,9 @@ export default function MapScreen() {
   const [locating, setLocating] = useState(false);
   const [selected, setSelected] = useState<Device | null>(null);
 
-  // Center the map on the user's CURRENT location (fresh fix). One-shot flyTo —
-  // it clears after 1s so it never fights gestures.
-  const centerOnMe = useCallback(async () => {
+  // Ask for (or read) the location permission — needed for the blue dot even
+  // when we are not moving the camera.
+  const ensureLocationPermission = useCallback(async () => {
     let granted = false;
     try {
       const cur = await Location.getForegroundPermissionsAsync();
@@ -106,7 +120,13 @@ export default function MapScreen() {
       granted = false;
     }
     setLocationGranted(granted);
-    if (!granted) return;
+    return granted;
+  }, []);
+
+  // Center the map on the user's CURRENT location (fresh fix). One-shot flyTo —
+  // it clears after 1s so it never fights gestures.
+  const centerOnMe = useCallback(async () => {
+    if (!(await ensureLocationPermission())) return;
     const pos = await getFreshPosition();
     if (!pos) return;
     setFlyTo({
@@ -115,59 +135,141 @@ export default function MapScreen() {
       zoom: 14,
     });
     setTimeout(() => setFlyTo(null), 1000);
-  }, []);
+  }, [ensureLocationPermission]);
 
-  // Re-center on a FRESH fix every time the map screen gains focus — not just on
-  // first mount. This is what fixes "tab back and it's still the old spot": each
-  // return to the map pulls a current position instead of trusting a stale one.
-  useFocusEffect(
-    useCallback(() => {
-      centerOnMe();
-    }, [centerOnMe]),
-  );
+  // The map RESTORES THE LAST VIEW. Coming back to the tab (or reloading the
+  // data) must never move the camera — the saved camera is what the user was
+  // looking at, and it is handed to the map as its initial camera. Only a map
+  // that has never been used has nowhere to start, and only then do we jump to
+  // the current position; otherwise just make sure the blue dot can show. The
+  // crosshair button is how the user asks to be re-centred.
+  const autoCentered = useRef(false);
+  useEffect(() => {
+    if (!loaded || autoCentered.current) return;
+    autoCentered.current = true;
+    if (settings.camera) void ensureLocationPermission();
+    else void centerOnMe();
+  }, [loaded, settings.camera, centerOnMe, ensureLocationPermission]);
 
   const years = useHuntingYears();
   const year = years.data?.find((y) => y.isActual)?.value ?? years.data?.[0]?.value;
 
   const districts = useDistrictsGeo(unitId, year, settings.showDistricts);
   const districtOptions = useHuntingDistrictOptions(unitId);
-  const districtIds = useMemo(
-    () => (districtOptions.data ?? []).map((d) => d.id),
+  const districtOpts = useMemo(
+    () => districtOptions.data ?? [],
     [districtOptions.data],
   );
-  const rewirs = useRewirsGeo(unitId, districtIds, settings.showRewirs);
+  const districtIds = useMemo(() => districtOpts.map((d) => d.id), [districtOpts]);
+  // The rewir polygons are also what the occupied list flies to, so they load
+  // whenever either layer is on.
+  const rewirs = useRewirsGeo(
+    unitId,
+    districtIds,
+    settings.showRewirs || settings.showOccupied,
+  );
   const devices = useHuntingDevices(unitId, year, settings.showDevices);
   const deviceTypes = useDeviceTypes(unitId);
 
-  // Occupied rewiry ("gdzie ktoś teraz poluje") — derived from the HUNT-PANEL
-  // (book) data we ALREADY have cached; no separate download. Recomputed
-  // reactively whenever the book cache changes (the map reload refetches it).
-  const qc = useQueryClient();
-  const [occupiedNames, setOccupiedNames] = useState<string[]>([]);
-  useEffect(() => {
-    const compute = () => {
-      const set = new Set<string>();
-      for (const [, data] of qc.getQueriesData<InfiniteData<BookPage>>({
-        queryKey: ['book', unitId],
-      })) {
-        for (const page of data?.pages ?? []) {
-          for (const e of page.entries) {
-            if (isCurrentlyHunting(e)) {
-              const n = rewirName(e.huntingPlace);
-              if (n) set.add(n);
-            }
-          }
-        }
-      }
-      const next = [...set].sort();
-      setOccupiedNames((prev) =>
-        prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next,
+  // Occupied rewiry ("gdzie ktoś teraz poluje") — the map PULLS the hunt data
+  // itself (książka ewidencji, every obwód of the koło), so the highlight is
+  // right even if the user never opened the Polowania tab.
+  const occupied = useOccupiedRewirs(unitId, year, districtOpts, settings.showOccupied);
+  const [occupiedOpen, setOccupiedOpen] = useState(false);
+
+  // Refresh occupancy when the map comes back into view, but only once it has
+  // gone stale — tab screens stay mounted, so react-query's refetchOnMount
+  // never fires for them.
+  const occupiedRef = useRef(occupied.query);
+  occupiedRef.current = occupied.query;
+  useFocusEffect(
+    useCallback(() => {
+      const q = occupiedRef.current;
+      if (q.isStale && !q.isFetching) void q.refetch();
+    }, []),
+  );
+
+  // Occupied rewiry indexed by their normalized label ("13 C" → "13C"). A label
+  // repeats across obwody, so a match must agree on the obwód too — unless the
+  // polygons carry no district id (or the two endpoints number districts
+  // differently, handled by the `loose` pass below), in which case the label
+  // alone is all there is to go on.
+  const occupiedByName = useMemo(() => {
+    const m = new Map<string, OccupiedRewir[]>();
+    for (const r of occupied.rewirs) {
+      const list = m.get(r.key);
+      if (list) list.push(r);
+      else m.set(r.key, [r]);
+    }
+    return m;
+  }, [occupied.rewirs]);
+
+  const isOccupied = useCallback(
+    (name: string, districtId: string, loose: boolean) => {
+      const list = occupiedByName.get(normalizeRewir(name));
+      if (!list?.length) return false;
+      if (loose || !districtId) return true;
+      return list.some(
+        (r) => r.districtKeys.length === 0 || r.districtKeys.includes(districtId),
       );
-    };
-    compute();
-    return qc.getQueryCache().subscribe(compute);
-  }, [qc, unitId]);
-  const occupiedSet = useMemo(() => new Set(occupiedNames), [occupiedNames]);
+    },
+    [occupiedByName],
+  );
+
+  /** Rewir polygons tagged with `occupied`, so the layer can paint them red. */
+  const rewirsGeo = useMemo(() => {
+    const fc = rewirs.data as GeoJSON.FeatureCollection | undefined;
+    if (!fc) return undefined;
+    const tag = (loose: boolean): GeoJSON.FeatureCollection => ({
+      ...fc,
+      features: fc.features.map((f) => ({
+        ...f,
+        properties: {
+          ...(f.properties ?? {}),
+          occupied:
+            settings.showOccupied &&
+            isOccupied(
+              String(f.properties?.name ?? ''),
+              String(f.properties?.districtId ?? ''),
+              loose,
+            ),
+        },
+      })),
+    });
+    const strict = tag(false);
+    // Nothing matched although hunts ARE running: the polygons' district ids
+    // don't line up with the book's. Fall back to matching on the rewir number
+    // alone rather than showing an empty map.
+    if (
+      settings.showOccupied &&
+      occupied.rewirs.length > 0 &&
+      !strict.features.some((f) => f.properties?.occupied)
+    ) {
+      return tag(true);
+    }
+    return strict;
+  }, [rewirs.data, isOccupied, occupied.rewirs.length, settings.showOccupied]);
+
+  /** Centre of each rewir polygon, for "tap an entry → fly there". */
+  const rewirCenters = useMemo(() => {
+    const byKey = new Map<string, MapCamera>();
+    const fc = rewirs.data as GeoJSON.FeatureCollection | undefined;
+    for (const f of fc?.features ?? []) {
+      const p = f.properties ?? {};
+      // The API's own `centerPoint`, with the polygon's mean as a fallback.
+      const c =
+        typeof p.centerLng === 'number' && typeof p.centerLat === 'number'
+          ? { longitude: p.centerLng, latitude: p.centerLat }
+          : centroidOf(f.geometry);
+      if (!c) continue;
+      const name = normalizeRewir(String(p.name ?? ''));
+      const district = String(p.districtId ?? '');
+      const cam = { ...c, zoom: 13 };
+      byKey.set(`${district}|${name}`, cam);
+      if (!byKey.has(name)) byKey.set(name, cam); // label-only fallback
+    }
+    return byKey;
+  }, [rewirs.data]);
 
   const activeRasterKeys = useMemo(() => {
     const keys = new Set<string>([settings.baseLayerKey]);
@@ -186,24 +288,11 @@ export default function MapScreen() {
         labelKeys: ['number'],
       });
     }
-    if (settings.showRewirs && rewirs.data) {
-      // Tag each rewir with `occupied` (someone hunting there now) so the layer
-      // can paint it red — derived from the cached book data, matched by name.
-      const fc = rewirs.data as GeoJSON.FeatureCollection;
-      const data: GeoJSON.FeatureCollection = {
-        ...fc,
-        features: fc.features.map((f) => ({
-          ...f,
-          properties: {
-            ...(f.properties ?? {}),
-            occupied: occupiedSet.has(String(f.properties?.name ?? '')),
-          },
-        })),
-      };
+    if (settings.showRewirs && rewirsGeo) {
       out.push({
         key: 'rewirs',
         kind: 'polygon',
-        data,
+        data: rewirsGeo,
         color: REWIR_COLOR,
         labelKeys: ['name'],
       });
@@ -228,9 +317,8 @@ export default function MapScreen() {
     settings.showDevices,
     settings.deviceTypeIds,
     districts.data,
-    rewirs.data,
+    rewirsGeo,
     devices.data,
-    occupiedSet,
   ]);
 
   // Which device types to show in the legend (respects the filter).
@@ -296,10 +384,9 @@ export default function MapScreen() {
     rewirs.refetch();
     deviceTypes.refetch();
     years.refetch();
-    // Also refresh the hunt-panel (book) data — that's what the occupied-rewiry
-    // highlight is derived from, so a map refresh keeps "who's hunting where"
-    // current (and updates the hunt page too).
-    qc.refetchQueries({ queryKey: ['book', unitId] });
+    // …including the hunt data behind the occupied-rewiry highlight, so a map
+    // refresh also refreshes "who is hunting where right now".
+    occupied.query.refetch();
     setSnack('Odświeżanie danych…');
   };
 
@@ -310,8 +397,22 @@ export default function MapScreen() {
         : [...settings.deviceTypeIds, typeId],
     });
 
+  /** Fly to a rewir picked from the occupied list. */
+  const focusRewir = (r: OccupiedRewir) => {
+    const cam =
+      r.districtKeys.map((k) => rewirCenters.get(`${k}|${r.key}`)).find(Boolean) ??
+      rewirCenters.get(r.key);
+    if (!cam) {
+      setSnack(`Brak granic rewiru ${r.name} na mapie.`);
+      return;
+    }
+    setOccupiedOpen(false);
+    flyOnce(cam);
+  };
+
   if (!loaded) return <View style={styles.root} />;
-  const fetching = devices.isFetching || districts.isFetching;
+  const fetching =
+    devices.isFetching || districts.isFetching || occupied.query.isFetching;
 
   return (
     <View style={styles.root}>
@@ -348,6 +449,33 @@ export default function MapScreen() {
           }
         />
 
+        {settings.showOccupied ? (
+          <View style={styles.topLeft} pointerEvents="box-none">
+            <Chip
+              compact
+              icon={
+                occupied.query.isFetching
+                  ? 'progress-clock'
+                  : occupied.rewirs.length
+                    ? 'target'
+                    : 'check-circle-outline'
+              }
+              onPress={() => setOccupiedOpen(true)}
+              style={occupied.rewirs.length ? styles.chipTaken : undefined}
+              textStyle={occupied.rewirs.length ? styles.chipTakenText : undefined}
+              selectedColor={occupied.rewirs.length ? '#ffffff' : undefined}
+            >
+              {occupied.query.isPending || (occupied.query.isFetching && !occupied.query.data)
+                ? 'Sprawdzam rewiry…'
+                : occupied.query.isError && !occupied.query.data
+                  ? 'Brak danych o polowaniach'
+                  : occupied.rewirs.length
+                    ? `Zajęte rewiry: ${occupied.rewirs.length}`
+                    : 'Wszystkie rewiry wolne'}
+            </Chip>
+          </View>
+        ) : null}
+
         <View style={styles.topRight} pointerEvents="box-none">
           <IconButton icon="layers" mode="contained" size={24} onPress={() => setPanelOpen((o) => !o)} style={styles.fab} />
           <IconButton icon="crosshairs-gps" mode="contained" size={24} loading={locating} disabled={locating} onPress={onLocate} style={styles.fab} />
@@ -382,6 +510,75 @@ export default function MapScreen() {
           </Surface>
         ) : null}
       </View>
+
+      {occupiedOpen ? (
+        <Portal>
+          <SafeAreaView style={styles.panelWrap} pointerEvents="box-none">
+            <Surface style={styles.panel} elevation={4}>
+              <View style={styles.panelHeader}>
+                <View style={styles.flex1}>
+                  <Text variant="titleMedium" style={styles.bold}>
+                    Zajęte rewiry
+                  </Text>
+                  <Text variant="bodySmall" style={styles.muted}>
+                    Z książki ewidencji — polowania jeszcze niezakończone
+                  </Text>
+                </View>
+                <DataAge
+                  updatedAt={occupied.query.dataUpdatedAt}
+                  isFetching={occupied.query.isFetching}
+                />
+                <IconButton icon="close" onPress={() => setOccupiedOpen(false)} />
+              </View>
+              <Divider />
+              <ScrollView>
+                {occupied.rewirs.length === 0 ? (
+                  <Text variant="bodySmall" style={styles.note}>
+                    {occupied.query.isError && !occupied.query.data
+                      ? 'Nie udało się pobrać książki ewidencji.'
+                      : 'Nikt nie jest teraz wpisany na polowanie.'}
+                  </Text>
+                ) : (
+                  occupied.rewirs.map((r) => (
+                    <List.Item
+                      key={`${r.districtId}|${r.name}`}
+                      title={`Rewir ${r.name}`}
+                      titleStyle={styles.bold}
+                      description={[
+                        r.districtLabel,
+                        ...r.hunters.map(
+                          (h) =>
+                            `${h.name} · ${h.upcoming ? 'zapisany od' : 'od'} ${fmtTime(
+                              h.startDate,
+                            )}` + (h.overdue ? ' · po czasie' : ''),
+                        ),
+                      ].join('\n')}
+                      descriptionNumberOfLines={r.hunters.length + 1}
+                      left={(props) => (
+                        <List.Icon {...props} icon="target" color={OCCUPIED_COLOR} />
+                      )}
+                      right={(props) => <List.Icon {...props} icon="map-search-outline" />}
+                      onPress={() => focusRewir(r)}
+                    />
+                  ))
+                )}
+                {occupied.unplaced > 0 ? (
+                  <Text variant="bodySmall" style={styles.note}>
+                    +{occupied.unplaced} trwających polowań bez wskazanego rewiru.
+                  </Text>
+                ) : null}
+                <Button
+                  icon="refresh"
+                  onPress={() => occupied.query.refetch()}
+                  disabled={occupied.query.isFetching}
+                >
+                  Odśwież polowania
+                </Button>
+              </ScrollView>
+            </Surface>
+          </SafeAreaView>
+        </Portal>
+      ) : null}
 
       {panelOpen ? (
         <Portal>
@@ -430,6 +627,13 @@ export default function MapScreen() {
                   label={`Rewiry${rewirs.data ? ` (${rewirs.data.features.length})` : ''}`}
                   status={settings.showRewirs ? 'checked' : 'unchecked'}
                   onPress={() => update({ showRewirs: !settings.showRewirs })}
+                />
+                <Checkbox.Item
+                  label={`Zajęte rewiry${
+                    occupied.query.data ? ` (${occupied.rewirs.length})` : ''
+                  }`}
+                  status={settings.showOccupied ? 'checked' : 'unchecked'}
+                  onPress={() => update({ showOccupied: !settings.showOccupied })}
                 />
                 <Checkbox.Item
                   label={`Urządzenia łowieckie${devices.data ? ` (${devices.data.length})` : ''}`}
@@ -483,6 +687,9 @@ const styles = StyleSheet.create({
   age: { flex: 1, alignItems: 'flex-end', paddingRight: 4 },
   mapArea: { flex: 1 },
   topRight: { position: 'absolute', top: 8, right: 4 },
+  topLeft: { position: 'absolute', top: 14, left: 12, flexDirection: 'row' },
+  chipTaken: { backgroundColor: OCCUPIED_COLOR },
+  chipTakenText: { color: '#ffffff' },
   fab: { margin: 6, marginBottom: 0 },
   legend: {
     position: 'absolute',

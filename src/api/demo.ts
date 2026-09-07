@@ -113,8 +113,8 @@ const districtsGeo = {
 const groundsData = [
   { huntingGroundId: 1, huntingDistrictId: 1, name: '1', color: '#007fff', geometry: { type: 'Polygon', coordinates: [ring(20.95, 52.24, 0.05)] } },
   { huntingGroundId: 2, huntingDistrictId: 1, name: '2', color: '#007fff', geometry: { type: 'Polygon', coordinates: [ring(21.05, 52.24, 0.05)] } },
-  { huntingGroundId: 3, huntingDistrictId: 1, name: '3', color: '#007fff', geometry: { type: 'Polygon', coordinates: [ring(20.95, 52.15, 0.05)] } },
-  { huntingGroundId: 4, huntingDistrictId: 1, name: '4', color: '#007fff', geometry: { type: 'Polygon', coordinates: [ring(21.05, 52.15, 0.05)] } },
+  { huntingGroundId: 3, huntingDistrictId: 1, name: '3 A', color: '#007fff', geometry: { type: 'Polygon', coordinates: [ring(20.95, 52.15, 0.05)] } },
+  { huntingGroundId: 4, huntingDistrictId: 1, name: '13 C', color: '#007fff', geometry: { type: 'Polygon', coordinates: [ring(21.05, 52.15, 0.05)] } },
 ];
 
 const devicesGeo = {
@@ -151,23 +151,22 @@ const devices = [
   dev(5, 'Lizawka nad rzeką', 2, 'Lizawka', 21.36, 52.04),
 ];
 
-// Książka ewidencji — some entries, one currently hunting.
+// Książka ewidencji — one hunt signed up for later (rewir already taken), one
+// in progress, one written out.
 const bookEntries = [
   {
-    id: 1, number: 145, startDate: minsAgo(70), endDate: null, huntingDistrictId: 1,
-    leadingPersonFullname: 'Andrzej Nowak', huntingPlace: 'Rewir: 17 (Ambona A-4)',
-    permitNumber: '12/2026', isStarted: true, isEnded: false, shotsFired: 0, animals: null,
-    checkoutPersonFullname: 'Andrzej Nowak',
+    id: 1, number: 145, startDate: minsAgo(-60), endDate: minsAgo(-540), huntingDistrictId: 1,
+    leadingPersonFullname: 'Andrzej Nowak', huntingPlace: 'Rewir: 13 C',
+    permitNumber: '12/2026', isStarted: false, isEnded: false, shotsFired: 0, animals: null,
   },
   {
     id: 2, number: 144, startDate: minsAgo(40), endDate: null, huntingDistrictId: 1,
-    leadingPersonFullname: 'Marek Wiśniewski', huntingPlace: 'Rewir: 18 (Zwyżka B-1)',
+    leadingPersonFullname: 'Marek Wiśniewski', huntingPlace: 'Rewir: 2 (Zwyżka B-1)',
     permitNumber: '09/2026', isStarted: true, isEnded: false, shotsFired: 1, animals: null,
-    checkoutPersonFullname: 'Marek Wiśniewski',
   },
   {
     id: 3, number: 140, startDate: minsAgo(1500), endDate: minsAgo(1350), huntingDistrictId: 1,
-    leadingPersonFullname: 'Piotr Zieliński', huntingPlace: 'Rewir: 4 (Paśnik C-2)',
+    leadingPersonFullname: 'Piotr Zieliński', huntingPlace: 'Rewir: 3 A (Paśnik C-2)',
     permitNumber: '07/2026', isStarted: true, isEnded: true, shotsFired: 2,
     animals: [{ animalName: 'Dzik', amount: 1, sex: 'samiec' }],
     checkoutPersonFullname: 'Piotr Zieliński', checkinPersonFullname: 'Piotr Zieliński',
@@ -253,6 +252,12 @@ export function demoResponse(
   // current user's hunts: { result, total }
   if (path.endsWith('/huntings/me')) {
     return { result: hunts.filter((h) => h.isActive), total: hunts.length };
+  }
+  // książka ewidencji of one obwód — must be checked BEFORE the generic hunts
+  // collection below, which would otherwise swallow this path and hand back the
+  // wrong shape (the "moje polowania" list).
+  if (m === 'GET' && /\/hunting-districts\/[^/]+\/huntings$/.test(path)) {
+    return { result: bookEntries, total: bookEntries.length };
   }
   // hunts collection
   if (/\/huntings(\?|$)/.test(path) || /\/huntings$/.test(path)) {

@@ -10,7 +10,7 @@ import {
   SymbolLayer,
   UserLocation,
 } from '@maplibre/maplibre-react-native';
-import { buildMapStyle, type VectorOverlay } from '@/map/style';
+import { OCCUPIED_COLOR, buildMapStyle, type VectorOverlay } from '@/map/style';
 import { POLAND_CENTER } from '@/map/layers';
 import type { MapCamera } from '@/map/HuntingMap';
 
@@ -110,14 +110,14 @@ export function HuntingMap({
             <FillLayer
               id={`geo-${ov.key}-fill`}
               style={{
-                fillColor: ['case', ['==', ['get', 'occupied'], true], '#c62828', ov.color] as never,
+                fillColor: ['case', ['==', ['get', 'occupied'], true], OCCUPIED_COLOR, ov.color] as never,
                 fillOpacity: ['case', ['==', ['get', 'occupied'], true], 0.4, 0.12] as never,
               }}
             />
             <LineLayer
               id={`geo-${ov.key}-line`}
               style={{
-                lineColor: ['case', ['==', ['get', 'occupied'], true], '#c62828', ov.color] as never,
+                lineColor: ['case', ['==', ['get', 'occupied'], true], OCCUPIED_COLOR, ov.color] as never,
                 lineWidth: ['case', ['==', ['get', 'occupied'], true], 3, 2] as never,
               }}
             />

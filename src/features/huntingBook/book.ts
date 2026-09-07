@@ -102,11 +102,64 @@ export function isCurrentlyHunting(e: BookEntry): boolean {
   return s === 'active' || s === 'overdue';
 }
 
-/** Rewir number from a hunt's `huntingPlace` string ("Rewir: 17" → "17"). */
+/**
+ * UNFINISHED — the entry still holds its rewir. True for a hunt in progress, for
+ * one that is over its time but was never written out, AND for one that is only
+ * signed up for later today (`isStarted: false`): the rewir is booked from the
+ * moment the entry exists, which is what the map has to show. False only once
+ * the entry is written out (`checkoutPersonFullname` / `isEnded`) or crossed
+ * out. Verified against the live book, where every finished entry carries a
+ * checkout name and a not-yet-started one carries none.
+ */
+export function isOpenHunt(e: BookEntry): boolean {
+  if (isCrossedOut(e)) return false;
+  if (e.checkoutPersonFullname) return false;
+  if (e.isEnded === true) return false;
+  return true;
+}
+
+/** Signed up, but the hunt has not begun yet. */
+export function isUpcoming(e: BookEntry): boolean {
+  if (e.isStarted === true) return false;
+  const start = Date.parse(e.startDate ?? '');
+  return !Number.isNaN(start) && start > Date.now();
+}
+
+/**
+ * Rewir labels from a hunt's `huntingPlace` string.
+ *   "Rewir: 13 C"              → ["13 C"]
+ *   "Rewir: 2"                 → ["2"]
+ *   "Rewir: 2 A, 3b"           → ["2 A", "3b"]
+ *   "Rewir: 17 (Ambona A-4)"   → ["17"]   (bracketed detail is not the rewir)
+ * A rewir label is NOT always a number — the live API names them "13 C", "2 A",
+ * "3b" — so the whole label is kept and only compared through `normalizeRewir`.
+ */
+export function rewirNames(huntingPlace?: string | null): string[] {
+  if (!huntingPlace) return [];
+  const afterColon = huntingPlace.split(':').slice(1).join(':');
+  const body = (afterColon || huntingPlace).split('(')[0];
+  return [
+    ...new Set(
+      body
+        .split(/[,;]/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+/** First rewir of a hunt, or null when the place names none. */
 export function rewirName(huntingPlace?: string | null): string | null {
-  if (!huntingPlace) return null;
-  const m = huntingPlace.match(/(\d+)\s*$/);
-  return m ? m[1] : null;
+  return rewirNames(huntingPlace)[0] ?? null;
+}
+
+/**
+ * Comparison form of a rewir label. The book writes "13 C" while the map layer
+ * may carry "13C", and one obwód mixes "3 A" with "3b" — so matching ignores
+ * case and spacing.
+ */
+export function normalizeRewir(name: string): string {
+  return name.replace(/\s+/g, '').toUpperCase();
 }
 
 function parseEntries(data: unknown): { entries: BookEntry[]; total: number } {
@@ -147,11 +200,21 @@ export async function fetchBookPage1(
   districtId: string | undefined,
   year: number | undefined,
 ): Promise<BookPage> {
+  return fetchBookPage(unitId, districtId, year, 1);
+}
+
+/** One page of a district book (1-indexed, newest entry first). */
+export async function fetchBookPage(
+  unitId: string,
+  districtId: string | undefined,
+  year: number | undefined,
+  page: number,
+): Promise<BookPage> {
   const data = await apiRequest(
     `/units/${unitId}/hunting-districts/${districtId}/huntings`,
-    { query: { year, page: 1 } },
+    { query: { year, page } },
   );
-  return { ...parseEntries(data), page: 1 };
+  return { ...parseEntries(data), page };
 }
 
 export function useDistrictBook(

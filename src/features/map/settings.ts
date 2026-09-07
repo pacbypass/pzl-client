@@ -10,6 +10,8 @@ export type MapSettings = {
   rasterOverlays: Record<string, boolean>;
   showDistricts: boolean;
   showRewirs: boolean;
+  /** Paint the rewiry someone is hunting in right now (pulls the hunt data). */
+  showOccupied: boolean;
   showDevices: boolean;
   showStands: boolean;
   showGrounds: boolean;
@@ -25,6 +27,7 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   rasterOverlays: {},
   showDistricts: true,
   showRewirs: true,
+  showOccupied: true,
   showDevices: true,
   showStands: false,
   showGrounds: false,

@@ -46,17 +46,20 @@ const DISTRICT_COLOR = '#2f6b26';
 const REWIR_COLOR = '#1565c0';
 const DEVICE_COLOR = '#f57c00';
 
-/** Short local time of a hunt's start/end ("07.09, 14:20"). */
+/** Start/end of a hunt: "14:20" when it is today, else "07.09, 14:20". */
 function fmtTime(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString('pl-PL', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const time = d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+  const now = new Date();
+  const today =
+    d.getDate() === now.getDate() &&
+    d.getMonth() === now.getMonth() &&
+    d.getFullYear() === now.getFullYear();
+  if (today) return time;
+  const day = d.toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit' });
+  return `${day}, ${time}`;
 }
 
 function nearestDevice(
@@ -530,11 +533,13 @@ export default function MapScreen() {
                   <Text variant="bodySmall" style={styles.muted}>
                     Z książki ewidencji — polowania jeszcze niezakończone
                   </Text>
+                  <View style={styles.panelAge}>
+                    <DataAge
+                      updatedAt={occupied.query.dataUpdatedAt}
+                      isFetching={occupied.query.isFetching}
+                    />
+                  </View>
                 </View>
-                <DataAge
-                  updatedAt={occupied.query.dataUpdatedAt}
-                  isFetching={occupied.query.isFetching}
-                />
                 <IconButton icon="close" onPress={() => setOccupiedOpen(false)} />
               </View>
               <Divider />
@@ -560,7 +565,7 @@ export default function MapScreen() {
                             )}` + (h.overdue ? ' · po czasie' : ''),
                         ),
                       ].join('\n')}
-                      descriptionNumberOfLines={r.hunters.length + 1}
+                      descriptionNumberOfLines={r.hunters.length + 2}
                       left={(props) => (
                         <List.Icon {...props} icon="target" color={OCCUPIED_COLOR} />
                       )}
@@ -721,6 +726,7 @@ const styles = StyleSheet.create({
   panelWrap: { flex: 1, justifyContent: 'flex-end' },
   panel: { margin: 12, borderRadius: 16, paddingHorizontal: 4, paddingBottom: 12, maxHeight: '80%' },
   panelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingLeft: 12 },
+  panelAge: { alignItems: 'flex-start', paddingTop: 2, paddingBottom: 4 },
   section: { marginTop: 8, marginBottom: 2, marginLeft: 16, opacity: 0.6 },
   bold: { fontWeight: '700' },
   muted: { opacity: 0.6 },

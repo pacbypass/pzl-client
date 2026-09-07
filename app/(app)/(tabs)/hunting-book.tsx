@@ -32,6 +32,10 @@ import {
 } from '@/features/huntingBook/lookups';
 import { useUnits } from '@/units/UnitProvider';
 
+/** Pozyskanie — the harvest row (and the shots that produced it) reads red, so
+ *  a hunt that actually took an animal stands out in the list. */
+const HARVEST_COLOR = '#c62828';
+
 function fmt(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -316,15 +320,25 @@ function BookRow({ entry, onPress }: { entry: BookEntry; onPress: () => void }) 
           </Text>
         </View>
         <View style={styles.metaRow}>
-          <Icon source="paw" size={15} color={theme.colors.primary} />
-          <Text variant="bodyMedium">
+          <Icon
+            source="paw"
+            size={15}
+            color={harvest.length ? HARVEST_COLOR : theme.colors.primary}
+          />
+          <Text variant="bodyMedium" style={harvest.length ? styles.harvest : null}>
             {harvest.length ? harvest.join(', ') : 'Brak pozyskania'}
           </Text>
         </View>
         {entry.shotsFired != null ? (
           <View style={styles.metaRow}>
-            <Icon source="target" size={15} color={theme.colors.primary} />
-            <Text variant="bodyMedium">Oddane strzały: {entry.shotsFired}</Text>
+            <Icon
+              source="target"
+              size={15}
+              color={harvest.length ? HARVEST_COLOR : theme.colors.primary}
+            />
+            <Text variant="bodyMedium" style={harvest.length ? styles.harvest : null}>
+              Oddane strzały: {entry.shotsFired}
+            </Text>
           </View>
         ) : null}
         <View style={styles.metaRow}>
@@ -359,5 +373,6 @@ const styles = StyleSheet.create({
   hunter: { fontWeight: '700', flex: 1 },
   struck: { textDecorationLine: 'line-through', color: '#6b6b6b' },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  harvest: { color: HARVEST_COLOR },
   muted: { opacity: 0.6 },
 });

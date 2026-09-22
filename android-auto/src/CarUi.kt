@@ -117,7 +117,9 @@ class CarUi {
         width: Int,
         title: String,
         subtitle: String?,
-        onRefresh: () -> Unit,
+        /** Null in the car: the host paints its action strip over that corner,
+         *  so refresh lives there instead of underneath it. */
+        onRefresh: (() -> Unit)? = null,
     ): Float {
         val h = dp(52f)
         fill.color = CarTheme.background
@@ -130,11 +132,13 @@ class CarUi {
             label(canvas, clip(it, dp(12f), width * 0.5f), dp(16f), h * 0.78f, dp(12f), CarTheme.muted)
         }
 
-        val r = dp(16f)
-        val cx = width - dp(28f)
-        val cy = h / 2f
-        iconRefresh(canvas, cx, cy, r * 0.62f, CarTheme.green)
-        hotspot(RectF(cx - r, cy - r, cx + r, cy + r), onRefresh)
+        onRefresh?.let {
+            val r = dp(16f)
+            val cx = width - dp(28f)
+            val cy = h / 2f
+            iconRefresh(canvas, cx, cy, r * 0.62f, CarTheme.green)
+            hotspot(RectF(cx - r, cy - r, cx + r, cy + r), it)
+        }
         return h
     }
 

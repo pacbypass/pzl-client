@@ -45,6 +45,7 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
             renderer,
             onRefresh = { reload() },
             onLocate = { location.current?.let { renderer.setCamera(it, 14.0) } },
+            showRefresh = true,
         )
         location.onUpdate = { renderer.setUserLocation(location.current) }
         location.start()

@@ -15,6 +15,8 @@ class CarMapChrome(
     private val renderer: CarMapRenderer,
     private val onRefresh: () -> Unit,
     private val onLocate: (() -> Unit)? = null,
+    /** The car hides it (the host strip owns that corner); the harness shows it. */
+    private val showRefresh: Boolean = false,
 ) {
     private val ui = CarUi()
 
@@ -64,18 +66,31 @@ class CarMapChrome(
         val w = width.toFloat()
         val h = height.toFloat()
 
-        val barBottom = ui.appBar(canvas, width, "Mapa", subtitle(), onRefresh)
+        // In the car the app bar carries no buttons: the host paints its own
+        // action strip over the top-right of this surface and anything drawn
+        // there would sit underneath it. The dev harness has no such strip, so
+        // it keeps the refresh button.
+        val barBottom = ui.appBar(
+            canvas,
+            width,
+            "Mapa",
+            subtitle(),
+            if (showRefresh) onRefresh else null,
+        )
 
-        ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(30f), CarUi.Icon.LAYERS) {
+        ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(46f), CarUi.Icon.LAYERS) {
             layersOpen = !layersOpen
             selected = null
+            selectedDevice = null
+            renderer.setHighlight(null)
         }
-        ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(82f), CarUi.Icon.LOCATE) {
-            renderer.setCamera(data.center, 13.0)
+        ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(98f), CarUi.Icon.LOCATE) {
+            onLocate?.invoke()
         }
 
-
+        if (!layersOpen) drawLegend(canvas, h)
         selected?.let { drawHunterCard(canvas, w, h, it) }
+        selectedDevice?.let { drawDeviceCard(canvas, w, h, it) }
         if (layersOpen) drawLayersPanel(canvas, w, h, barBottom)
     }
 

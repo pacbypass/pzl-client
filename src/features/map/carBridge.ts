@@ -1,0 +1,101 @@
+import { useEffect, useRef } from 'react';
+import { Platform } from 'react-native';
+import { File, Paths } from 'expo-file-system';
+import { buildMapStyle, type VectorOverlay } from '@/map/style';
+import type { OccupiedRewir } from '@/features/map/occupied';
+
+/**
+ * Hands the map over to the ANDROID AUTO car app.
+ *
+ * The car app renders the very style this screen renders — same raster layers,
+ * same obwód/rewir/occupied GeoJSON — so the style is published rather than
+ * rebuilt in Kotlin; there is one definition of what the map looks like.
+ *
+ * `Paths.document` is the app's own `filesDir`, which is exactly where
+ * `CarMapStore` reads `car-map.json`, so no native bridge is needed. Writing is
+ * best-effort: a failure here must never disturb the phone map, and the car app
+ * falls back to a plain OSM map when the file is missing.
+ */
+const FILE_NAME = 'car-map.json';
+/** Don't rewrite a few hundred KB on every pan. */
+const MIN_INTERVAL_MS = 4000;
+
+export type CarMapMarker = {
+  rewir: OccupiedRewir;
+  longitude: number;
+  latitude: number;
+};
+
+const OCCUPIED_PIN = '#c62828';
+
+function fmtHunter(h: OccupiedRewir['hunters'][number]): string {
+  const when = h.startDate
+    ? new Date(h.startDate).toLocaleTimeString('pl-PL', {
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '—';
+  return (
+    `${h.name} · ${h.upcoming ? 'zapisany od' : 'od'} ${when}` +
+    (h.overdue ? ' · po czasie' : '')
+  );
+}
+
+export function usePublishCarMap(input: {
+  activeRasterKeys: Set<string>;
+  vectorOverlays: VectorOverlay[];
+  markers: CarMapMarker[];
+  camera: { longitude: number; latitude: number; zoom: number } | null;
+  enabled: boolean;
+}) {
+  const lastWrite = useRef(0);
+  const lastPayload = useRef('');
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const { activeRasterKeys, vectorOverlays, markers, camera, enabled } = input;
+
+  useEffect(() => {
+    // Only Android has a car app; the web build has no file system to speak of.
+    if (Platform.OS !== 'android' || !enabled) return;
+
+    const publish = () => {
+      try {
+        const payload = JSON.stringify({
+          style: buildMapStyle(activeRasterKeys, vectorOverlays),
+          camera: camera
+            ? { lng: camera.longitude, lat: camera.latitude, zoom: camera.zoom }
+            : null,
+          markers: markers.map((m) => ({
+            id: `${m.rewir.districtId}|${m.rewir.key}`,
+            title: `Rewir ${m.rewir.name}`,
+            subtitle: [
+              `Obwód ${m.rewir.districtLabel}`,
+              ...m.rewir.hunters.map(fmtHunter),
+            ].join('\n'),
+            lng: m.longitude,
+            lat: m.latitude,
+            color: OCCUPIED_PIN,
+          })),
+          updatedAt: Date.now(),
+        });
+        // `updatedAt` changes every time, so compare everything before it.
+        const signature = payload.slice(0, payload.lastIndexOf('"updatedAt"'));
+        if (signature === lastPayload.current) return;
+        lastPayload.current = signature;
+        lastWrite.current = Date.now();
+
+        const file = new File(Paths.document, FILE_NAME);
+        if (!file.exists) file.create({ overwrite: true });
+        file.write(payload);
+      } catch {
+        // Never let the car hand-off break the map screen.
+      }
+    };
+
+    const wait = Math.max(0, MIN_INTERVAL_MS - (Date.now() - lastWrite.current));
+    timer.current = setTimeout(publish, wait);
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [activeRasterKeys, vectorOverlays, markers, camera, enabled]);
+}

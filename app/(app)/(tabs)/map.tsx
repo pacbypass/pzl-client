@@ -38,6 +38,7 @@ import {
   type OccupiedRewir,
 } from '@/features/map/occupied';
 import { normalizeRewir } from '@/features/huntingBook/book';
+import { usePublishCarMap } from '@/features/map/carBridge';
 import { useUnits } from '@/units/UnitProvider';
 
 const DISTRICT_COLOR = '#2f6b26';
@@ -476,6 +477,16 @@ export default function MapScreen() {
         ? settings.deviceTypeIds.filter((t) => t !== typeId)
         : [...settings.deviceTypeIds, typeId],
     });
+
+  // Hand the current map to the Android Auto car app (Android only, best
+  // effort — see carBridge). Nothing on this screen depends on it.
+  usePublishCarMap({
+    activeRasterKeys,
+    vectorOverlays,
+    markers: occupiedMarkers,
+    camera: settings.camera,
+    enabled: loaded,
+  });
 
   const selectedMarker = selectedRewir
     ? occupiedMarkers.find((m) => m.rewir === selectedRewir)

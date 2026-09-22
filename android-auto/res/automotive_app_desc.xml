@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tells Android Auto which capability this app projects. Written into the
+     prebuilt project by plugins/withAndroidAuto.js. -->
+<automotiveApp>
+    <uses name="template" />
+</automotiveApp>

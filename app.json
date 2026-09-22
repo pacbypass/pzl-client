@@ -51,7 +51,8 @@
         }
       ],
       "expo-font",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      "./plugins/withAndroidAuto"
     ],
     "experiments": {
       "typedRoutes": true

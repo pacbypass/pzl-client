@@ -1,17 +1,26 @@
 package com.smallgis.pzl.client.car
 
 import android.app.Activity
+import android.graphics.Color
 import android.os.Bundle
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ScaleGestureDetector
+import android.widget.FrameLayout
 
 /**
  * DEV HARNESS — the car renderer on a plain `SurfaceView`, so it can be checked
  * on an ordinary phone/emulator without a head unit:
  *
  *   adb shell am start -n com.smallgis.pzl.client/.car.CarMapPreviewActivity
+ *
+ * Pass the head unit's size to lay the chrome out exactly as the car will
+ * (a real Android Auto screen reported 800x400):
+ *
+ *   adb shell am start -n com.smallgis.pzl.client/.car.CarMapPreviewActivity \
+ *     --ei w 800 --ei h 400
  *
  * It is not in the launcher and nothing in the app links to it; the phone app
  * is unaffected. Delete once the car side is settled.
@@ -28,7 +37,21 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
         renderer = CarMapRenderer(this)
         val view = SurfaceView(this)
         view.holder.addCallback(this)
-        setContentView(view)
+        val w = intent.getIntExtra("w", 0)
+        val h = intent.getIntExtra("h", 0)
+        if (w > 0 && h > 0) {
+            // Letterbox to the head unit's aspect so the layout is what the car gets.
+            view.holder.setFixedSize(w, h)
+            val frame = FrameLayout(this)
+            frame.setBackgroundColor(Color.BLACK)
+            frame.addView(
+                view,
+                FrameLayout.LayoutParams(w, h, Gravity.CENTER),
+            )
+            setContentView(frame)
+        } else {
+            setContentView(view)
+        }
         scale = ScaleGestureDetector(
             this,
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {

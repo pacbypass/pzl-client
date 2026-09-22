@@ -102,4 +102,34 @@ object CarMapStore {
     }
 
     fun readOrFallback(context: Context): CarMapData = read(context) ?: fallback()
+
+    /**
+     * What the phone currently has switched on, read back out of the published
+     * style so the car's layers panel mirrors the phone's without the two
+     * keeping separate settings.
+     */
+    fun layerSummary(data: CarMapData): List<Pair<String, Boolean>> {
+        val names = mapOf(
+            "osm" to "OpenStreetMap",
+            "orto" to "Ortofotomapa (GUGiK)",
+            "bdl" to "Lasy Państwowe (BDL)",
+            "cadastre" to "Ewidencja gruntów (KIEG)",
+            "bdot10k" to "BDOT10k (topografia)",
+            "districts" to "Obwody łowieckie",
+            "rewirs" to "Rewiry",
+            "rewirs-occupied" to "Zajęte rewiry",
+            "devices" to "Urządzenia łowieckie",
+            "occupied-markers" to null,
+        )
+        val present = try {
+            JSONObject(data.styleJson).optJSONObject("sources")?.keys()?.asSequence()?.toSet()
+                ?: emptySet()
+        } catch (e: Exception) {
+            emptySet<String>()
+        }
+        return names.entries
+            .filter { it.value != null }
+            .map { (id, label) -> label!! to present.contains(id) }
+            .filter { it.second }
+    }
 }

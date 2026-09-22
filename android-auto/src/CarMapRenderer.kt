@@ -70,6 +70,12 @@ class CarMapRenderer(private val context: Context) {
     /** Points the car app can tap — the middle of every taken rewir. */
     private var markers: List<CarMarker> = emptyList()
 
+    /**
+     * The app's chrome, painted over the map every frame: app bar, buttons,
+     * cards, panels. Supplied by the screen so the renderer stays about pixels.
+     */
+    var overlay: ((Canvas, Int, Int) -> Unit)? = null
+
     // ---- lifecycle -------------------------------------------------------
 
     fun attach(surface: Surface, width: Int, height: Int, dpi: Int) {
@@ -116,6 +122,7 @@ class CarMapRenderer(private val context: Context) {
             status?.let {
                 canvas.drawText(it, width / 2f, height / 2f, statusPaint)
             }
+            overlay?.invoke(canvas, width, height)
         } finally {
             surface.unlockCanvasAndPost(canvas)
         }
@@ -302,9 +309,16 @@ class CarMapRenderer(private val context: Context) {
     }
 
     private fun redrawLastFrame() {
-        val bitmap = lastBitmap ?: return
+        val bitmap = lastBitmap
+        if (bitmap == null) {
+            drawStatus()
+            return
+        }
         drawFrame(bitmap, dragX, dragY)
     }
+
+    /** Repaint after the chrome changed (a panel opened, a card was closed). */
+    fun redraw() = redrawLastFrame()
 
     private fun drawFrame(bitmap: Bitmap, offsetX: Float, offsetY: Float) {
         val surface = surface ?: return
@@ -319,6 +333,7 @@ class CarMapRenderer(private val context: Context) {
             canvas.drawColor(Color.rgb(0xE6, 0xED, 0xE1))
             canvas.drawBitmap(bitmap, offsetX, offsetY, null)
             drawOverlays(canvas, offsetX, offsetY)
+            overlay?.invoke(canvas, width, height)
         } finally {
             surface.unlockCanvasAndPost(canvas)
         }

@@ -123,6 +123,12 @@ function withCarManifest(config) {
               { $: { 'android:name': 'androidx.car.app.category.NAVIGATION' } },
             ],
           },
+          // A navigation app has to accept "navigate here" intents; Android Auto
+          // filters nav apps out of its launcher when this is missing.
+          {
+            action: [{ $: { 'android:name': 'androidx.car.app.action.NAVIGATE' } }],
+            data: [{ $: { 'android:scheme': 'geo' } }],
+          },
         ],
       });
     }

@@ -78,7 +78,48 @@ export type MyAuthorization = {
   startDate?: string;
   endDate?: string;
   statusName?: string;
+  /** Set once the hunter handed the permit back — it is spent from then on. */
+  returnDate?: string;
+  /** A prolonged permit's new end date; it wins over `endDate`. */
+  extendedToDate?: string;
+  /** Printed but not handed out yet. */
+  isUnreleased?: boolean;
+  /** Blocked in eKEP. */
+  isEkepBlock?: boolean;
 };
+
+/**
+ * Can this permit still be hunted on today?
+ *
+ * `/authorizations/me?year=` returns the WHOLE season — including permits that
+ * were already returned and have run out. The live account carries 3 per obwód
+ * that way while the vendor app offers 2, the third being e.g. "17/185/26-27"
+ * (endDate 2026-08-31, returnDate 2026-08-30). Filtering on these fields
+ * reproduces the vendor's list exactly: it yields the same ids as
+ * `/persons/hunters/{id}/permits`, the pre-filtered endpoint the app uses when
+ * booking somebody else.
+ *
+ * `status`/`statusName` do NOT discriminate — a returned permit is still
+ * "W"/"Wydane" — so the dates are what decide.
+ */
+export function isCurrentPermit(
+  p: MyAuthorization,
+  now: Date = new Date(),
+): boolean {
+  if (p.returnDate) return false;
+  if (p.isUnreleased === true) return false;
+  if (p.isEkepBlock === true) return false;
+  // Dates come as plain "YYYY-MM-DD", so compare them as such — no timezone
+  // shifting a permit in or out of validity around midnight.
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+    now.getDate(),
+  ).padStart(2, '0')}`;
+  const end = (p.extendedToDate ?? p.endDate)?.slice(0, 10);
+  if (end && end < today) return false;
+  const start = p.startDate?.slice(0, 10);
+  if (start && start > today) return false;
+  return true;
+}
 
 export function useMyAuthorizations(unitId: string, year: number | undefined) {
   return useQuery({
@@ -106,6 +147,10 @@ export function useMyAuthorizations(unitId: string, year: number | undefined) {
             startDate: r.startDate ? String(r.startDate) : undefined,
             endDate: r.endDate ? String(r.endDate) : undefined,
             statusName: r.statusName ? String(r.statusName) : undefined,
+            returnDate: r.returnDate ? String(r.returnDate) : undefined,
+            extendedToDate: r.extendedToDate ? String(r.extendedToDate) : undefined,
+            isUnreleased: r.isUnreleased === true,
+            isEkepBlock: r.isEkepBlock === true,
           }),
         );
     },
@@ -116,6 +161,10 @@ export function useMyAuthorizations(unitId: string, year: number | undefined) {
  * Permits held by ANOTHER hunter — for booking someone else ("Inny myśliwy").
  * `/persons/hunters/{hunterId}/permits` → `[{id, number, huntingDistrictId}]`.
  * Same {id} shape as the self permits, so the sign-up form treats both alike.
+ *
+ * This endpoint is already filtered SERVER-side to the permits that are valid
+ * now (verified against a hunter whose season list holds returned ones too), so
+ * the rows carry no dates — `isCurrentPermit` passes them through unchanged.
  */
 export function useHunterPermits(unitId: string, hunterId: string | undefined) {
   return useQuery({

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import {
   Button,
@@ -17,6 +18,7 @@ import { useIsOnline } from '@/offline/connectivity';
 import { useAuth } from '@/auth/AuthProvider';
 import { personIdFromToken } from '@/auth/jwt';
 import {
+  isCurrentPermit,
   useHunterPermits,
   useMyAuthorizations,
   useRewirOptions,
@@ -91,6 +93,9 @@ function Dropdown({
 export default function HuntingSignup() {
   const theme = useTheme();
   const router = useRouter();
+  // The form ends with "Rozpocznij polowanie"; without this the button sits
+  // right on the system navigation bar at the bottom of the screen.
+  const insets = useSafeAreaInsets();
   const online = useIsOnline();
   const { mode: modeParam } = useLocalSearchParams<{ mode?: string }>();
   const [mode, setMode] = useState<'self' | 'other'>(
@@ -137,11 +142,17 @@ export default function HuntingSignup() {
     [rewirs.data],
   );
 
-  // Permits for the chosen obwód (from whichever hunter's permit list).
+  // Permits for the chosen obwód — only the ones still valid today. The season
+  // list (`/authorizations/me`) also carries permits that were handed back or
+  // have run out; offering those is what made three appear per obwód where the
+  // vendor app shows two.
   const permitsForDistrict = useMemo(
     () =>
       (permitsQuery.data ?? []).filter(
-        (a) => district && String(a.huntingDistrictId) === district.id,
+        (a) =>
+          district &&
+          String(a.huntingDistrictId) === district.id &&
+          isCurrentPermit(a),
       ),
     [permitsQuery.data, district],
   );
@@ -223,7 +234,10 @@ export default function HuntingSignup() {
       />
       <ScrollView
         style={{ backgroundColor: theme.colors.background }}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: insets.bottom + 48 },
+        ]}
         keyboardShouldPersistTaps="handled"
       >
         <SegmentedButtons

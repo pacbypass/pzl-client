@@ -43,6 +43,11 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
         renderer.overlay = { canvas, w, h -> chrome.draw(canvas, w, h) }
         val view = SurfaceView(this)
         view.holder.addCallback(this)
+        // Touch must be handled ON the surface view: Activity.onTouchEvent
+        // reports WINDOW coordinates, and the surface is letterboxed inside the
+        // window, so those would not line up with what the renderer drew. The
+        // car host hands us surface-relative coordinates, and so does this.
+        view.setOnTouchListener { _, event -> handleTouch(event) }
         val w = intent.getIntExtra("w", 0)
         val h = intent.getIntExtra("h", 0)
         if (w > 0 && h > 0) {
@@ -89,7 +94,7 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
         renderer.detach()
     }
 
-    override fun onTouchEvent(event: MotionEvent): Boolean {
+    private fun handleTouch(event: MotionEvent): Boolean {
         scale.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {

@@ -51,6 +51,10 @@ class CarMapRenderer(private val context: Context) {
 
     private var snapshotter: MapSnapshotter? = null
     private var styleJson: String? = null
+    /** The style as published, before any failing sources were dropped. */
+    private var styleJsonFull: String? = null
+    /** Sources whose tiles the snapshotter could not decode. */
+    private val disabledSources = mutableSetOf<String>()
     private var camera = CameraPosition.Builder().target(FALLBACK).zoom(6.0).build()
 
     /** Last rendered frame, kept so a drag can blit it at an offset. */
@@ -130,7 +134,9 @@ class CarMapRenderer(private val context: Context) {
 
     fun setStyle(json: String) {
         Log.i(TAG, "setStyle ${json.length}B")
-        if (json == styleJson) return
+        if (json == styleJsonFull) return
+        styleJsonFull = json
+        disabledSources.clear()
         styleJson = json
         rebuildSnapshotter()
     }
@@ -253,9 +259,34 @@ class CarMapRenderer(private val context: Context) {
         }, { error ->
             snapshotInFlight = false
             Log.e(TAG, "snapshot failed: $error")
-            status = "Nie udało się wczytać mapy"
-            drawStatus()
+            if (!retryWithout(error)) {
+                // Keep the last good frame if there is one; a stale map beats none.
+                if (lastBitmap == null) {
+                    status = "Nie udało się wczytać mapy"
+                    drawStatus()
+                }
+            }
         })
+    }
+
+    /**
+     * A tile that would not decode aborts the snapshot, so the source it came
+     * from is dropped and the map re-rendered without it. Bounded, so a style
+     * that fails for some other reason cannot spin.
+     */
+    private fun retryWithout(error: String): Boolean {
+        val full = styleJsonFull ?: return false
+        val source = CarStyleFilter.sourceFromError(error) ?: return false
+        if (disabledSources.size >= 6 || !disabledSources.add(source)) return false
+        Log.w(TAG, "dropping source '$source' and retrying without it")
+        styleJson = try {
+            CarStyleFilter.without(full, disabledSources)
+        } catch (e: Throwable) {
+            Log.e(TAG, "could not filter style", e)
+            return false
+        }
+        main.post { rebuildSnapshotter() }
+        return true
     }
 
     private fun redrawLastFrame() {

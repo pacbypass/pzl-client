@@ -14,25 +14,47 @@ import android.graphics.RectF
 class CarMapChrome(
     private val renderer: CarMapRenderer,
     private val onRefresh: () -> Unit,
-    private val onOpenList: (() -> Unit)? = null,
+    private val onLocate: (() -> Unit)? = null,
 ) {
     private val ui = CarUi()
 
     var data: CarMapData = CarMapStore.fallback()
     private var selected: CarMarker? = null
+    private var selectedDevice: CarDevice? = null
     private var layersOpen = false
 
     fun reset() {
         selected = null
+        selectedDevice = null
         layersOpen = false
     }
 
     /** True when the tap was consumed; the caller should repaint either way. */
     fun tap(x: Float, y: Float): Boolean {
         if (ui.tap(x, y)) return true
-        if (layersOpen) return false
-        selected = renderer.markerAt(x, y)
-        return selected != null
+        if (layersOpen) {
+            layersOpen = false
+            return true
+        }
+        // Same rule as the phone: whichever is nearer, a rewir pin or a device.
+        // Falling back to the rewir's polygon means tapping the red area works
+        // too, which matters far more with a finger in a moving car.
+        val pin = renderer.markerAt(x, y)
+        val device = renderer.deviceAt(x, y)
+        val pinDist = pin?.let { renderer.markerDistance(x, y, it) } ?: Float.MAX_VALUE
+        val deviceDist = device?.let { d ->
+            renderer.deviceAt(x, y)?.let { renderer.markerDistanceTo(x, y, d.position) }
+        } ?: Float.MAX_VALUE
+
+        selected = null
+        selectedDevice = null
+        when {
+            pin != null && pinDist <= deviceDist -> selected = pin
+            device != null -> selectedDevice = device
+            else -> selected = renderer.shapeAt(x, y)
+        }
+        renderer.setHighlight(selectedDevice?.position ?: selected?.position)
+        return selected != null || selectedDevice != null
     }
 
     fun blockingGesture(): Boolean = layersOpen
@@ -57,8 +79,10 @@ class CarMapChrome(
         if (layersOpen) drawLayersPanel(canvas, w, h, barBottom)
     }
 
+    /** Koło name plus how old the phone's data is — the phone shows the unit
+     *  name and a DataAge chip in the same place. */
     private fun subtitle(): String {
-        val taken = data.markers.size
+        val unit = data.unit?.let { "$it · " } ?: ""
         val age = if (data.updatedAt > 0) {
             val mins = (System.currentTimeMillis() - data.updatedAt) / 60000
             when {
@@ -70,7 +94,50 @@ class CarMapChrome(
         } else {
             "brak danych z telefonu"
         }
-        return "zajęte rewiry: $taken · $age"
+        return "$unit$age · zajęte rewiry: ${data.markers.size}"
+    }
+
+    /** Device-type legend, bottom-left, exactly as on the phone. */
+    private fun drawLegend(canvas: Canvas, h: Float) {
+        val types = data.devices
+            .filter { it.type.isNotBlank() }
+            .groupBy { it.type to it.color }
+            .keys
+            .take(7)
+        if (types.isEmpty()) return
+        val rowH = ui.dp(15f)
+        val rect = RectF(
+            ui.dp(10f),
+            h - ui.dp(14f) - types.size * rowH,
+            ui.dp(132f),
+            h - ui.dp(8f),
+        )
+        ui.card(canvas, rect, CarTheme.surface, ui.dp(10f))
+        var y = rect.top + ui.dp(13f)
+        for ((label, color) in types) {
+            ui.legendRow(canvas, rect.left + ui.dp(10f), y, label, color)
+            y += rowH
+        }
+    }
+
+    /** The phone's device card: name, then "type · nr N". */
+    private fun drawDeviceCard(canvas: Canvas, w: Float, h: Float, device: CarDevice) {
+        val rect = RectF(w * 0.30f, h - ui.dp(58f), w - ui.dp(12f), h - ui.dp(12f))
+        ui.card(canvas, rect)
+        ui.row(
+            canvas,
+            RectF(rect.left, rect.top, rect.right - ui.dp(30f), rect.bottom),
+            device.name,
+            listOfNotNull(
+                device.type.takeIf { it.isNotBlank() },
+                device.number?.let { "nr $it" },
+            ).joinToString(" · "),
+            device.color,
+        )
+        ui.iconButton(canvas, rect.right - ui.dp(16f), rect.top + ui.dp(15f), CarUi.Icon.CLOSE) {
+            selectedDevice = null
+            renderer.setHighlight(null)
+        }
     }
 
     /** The phone's bottom card: rewir, obwód, and who is signed up there. */
@@ -101,6 +168,7 @@ class CarMapChrome(
         }
         ui.iconButton(canvas, rect.right - ui.dp(16f), rect.top + ui.dp(15f), CarUi.Icon.CLOSE) {
             selected = null
+            renderer.setHighlight(null)
         }
     }
 

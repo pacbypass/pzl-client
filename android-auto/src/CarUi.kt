@@ -232,6 +232,13 @@ class CarUi {
         onTap?.let { hotspot(RectF(rect), it) }
     }
 
+    /** One line of the device legend: colour dot plus the type name. */
+    fun legendRow(canvas: Canvas, x: Float, y: Float, label: String, color: Int) {
+        fill.color = color
+        canvas.drawCircle(x + dp(4f), y - dp(4f), dp(4f), fill)
+        label(canvas, clip(label, dp(11f), dp(96f)), x + dp(13f), y, dp(11f))
+    }
+
     fun scrim(canvas: Canvas, width: Int, height: Int, onTap: () -> Unit) {
         fill.color = CarTheme.scrim
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), fill)

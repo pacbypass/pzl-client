@@ -69,6 +69,12 @@ class CarMapRenderer(private val context: Context) {
     private var userLocation: LatLng? = null
     /** Points the car app can tap — the middle of every taken rewir. */
     private var markers: List<CarMarker> = emptyList()
+    /** Devices are drawn by the style; these are kept for hit testing. */
+    private var devices: List<CarDevice> = emptyList()
+    /** Outlines of the taken rewiry, so a tap inside one counts. */
+    private var shapes: List<CarShape> = emptyList()
+    /** Ring drawn around whatever the user last selected. */
+    private var highlight: LatLng? = null
 
     /**
      * The app's chrome, painted over the map every frame: app bar, buttons,
@@ -164,6 +170,61 @@ class CarMapRenderer(private val context: Context) {
         redrawLastFrame()
     }
 
+    fun setDevices(devices: List<CarDevice>) {
+        this.devices = devices
+    }
+
+    fun setShapes(shapes: List<CarShape>) {
+        this.shapes = shapes
+    }
+
+    fun setHighlight(position: LatLng?) {
+        highlight = position
+        redrawLastFrame()
+    }
+
+    /** Nearest device to a tap, as the phone's map does it. */
+    fun deviceAt(x: Float, y: Float, tolerance: Float = 34f): CarDevice? {
+        val snapshot = lastSnapshot ?: return null
+        var best: CarDevice? = null
+        var bestDist = tolerance
+        for (d in devices) {
+            val p = snapshot.pixelForLatLng(d.position)
+            val dist = Math.hypot((p.x - x).toDouble(), (p.y - y).toDouble()).toFloat()
+            if (dist < bestDist) {
+                bestDist = dist
+                best = d
+            }
+        }
+        return best
+    }
+
+    /** Pixel distance to any position, for "which is closer" checks. */
+    fun markerDistanceTo(x: Float, y: Float, position: LatLng): Float {
+        val snapshot = lastSnapshot ?: return Float.MAX_VALUE
+        val p = snapshot.pixelForLatLng(position)
+        return Math.hypot((p.x - x).toDouble(), (p.y - y).toDouble()).toFloat()
+    }
+
+    /** Distance in pixels to the nearest rewir pin, for "which is closer" checks. */
+    fun markerDistance(x: Float, y: Float, marker: CarMarker): Float {
+        val snapshot = lastSnapshot ?: return Float.MAX_VALUE
+        val p = snapshot.pixelForLatLng(marker.position)
+        return Math.hypot((p.x - x).toDouble(), (p.y - y).toDouble()).toFloat()
+    }
+
+    /** The taken rewir whose polygon contains this tap, if any. */
+    fun shapeAt(x: Float, y: Float): CarMarker? {
+        val snapshot = lastSnapshot ?: return null
+        val at = snapshot.latLngForPixel(PointF(x, y)) ?: return null
+        for (shape in shapes) {
+            if (CarMapStore.contains(shape, at.longitude, at.latitude)) {
+                return markers.firstOrNull { it.id == shape.markerId }
+            }
+        }
+        return null
+    }
+
     fun camera(): CameraPosition = camera
 
     /** Raster sources dropped because their tiles would not decode. */
@@ -202,10 +263,27 @@ class CarMapRenderer(private val context: Context) {
         setCamera(target, camera.zoom)
     }
 
-    fun onZoom(factor: Float) {
+    fun onZoom(factor: Float) = onZoomAt(width / 2f, height / 2f, factor)
+
+    /**
+     * Pinch keeps the point under the fingers put, instead of always zooming on
+     * the middle of the screen — the map moves the way it does on the phone.
+     */
+    fun onZoomAt(focusX: Float, focusY: Float, factor: Float) {
         val zoom = (camera.zoom + Math.log(factor.toDouble()) / Math.log(2.0))
             .coerceIn(4.0, 17.0)
-        setCamera(camera.target ?: FALLBACK, zoom)
+        val snapshot = lastSnapshot
+        val k = Math.pow(2.0, zoom - camera.zoom).toFloat()
+        if (snapshot == null || k <= 0f || Math.abs(k - 1f) < 0.001f) {
+            setCamera(camera.target ?: FALLBACK, zoom)
+            return
+        }
+        val cx = width / 2f
+        val cy = height / 2f
+        val target = snapshot.latLngForPixel(
+            PointF(cx + (focusX - cx) * (1f - 1f / k), cy + (focusY - cy) * (1f - 1f / k)),
+        ) ?: camera.target ?: FALLBACK
+        setCamera(target, zoom)
     }
 
     /** Which marker (if any) sits under a tap, within `tolerance` pixels. */
@@ -352,6 +430,15 @@ class CarMapRenderer(private val context: Context) {
             markerPaint.color = m.color
             canvas.drawCircle(x, y, 14f, markerPaint)
             canvas.drawCircle(x, y, 14f, strokePaint)
+        }
+        highlight?.let {
+            // Selection ring, as the phone draws around a tapped device.
+            val p = snapshot.pixelForLatLng(it)
+            strokePaint.color = Color.rgb(0x15, 0x65, 0xC0)
+            strokePaint.strokeWidth = 3f
+            canvas.drawCircle(p.x + offsetX, p.y + offsetY, 15f, strokePaint)
+            strokePaint.color = Color.WHITE
+            strokePaint.strokeWidth = 4f
         }
         userLocation?.let {
             val p = snapshot.pixelForLatLng(it)

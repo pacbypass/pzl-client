@@ -26,10 +26,11 @@ import androidx.lifecycle.LifecycleOwner
 class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback, DefaultLifecycleObserver {
 
     private val renderer = CarMapRenderer(carContext)
+    private val location = CarLocation(carContext)
     private val chrome = CarMapChrome(
         renderer,
         onRefresh = { load() },
-        onOpenList = { screenManager.push(OccupiedListScreen(carContext, data.markers)) },
+        onLocate = { centreOnMe() },
     )
     private var data: CarMapData = CarMapStore.fallback()
 
@@ -41,10 +42,25 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     override fun onCreate(owner: LifecycleOwner) {
         android.util.Log.i(TAG, "registering surface callback")
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(this)
+        location.onUpdate = {
+            renderer.setUserLocation(location.current)
+        }
+        location.start()
     }
 
     override fun onDestroy(owner: LifecycleOwner) {
+        location.stop()
         renderer.detach()
+    }
+
+    /** The crosshair button: go to the driver, like the phone's locate FAB. */
+    private fun centreOnMe() {
+        val at = location.current
+        if (at == null) {
+            android.util.Log.i(TAG, "locate: no fix yet")
+            return
+        }
+        renderer.setCamera(at, 14.0)
     }
 
     // ---- surface ---------------------------------------------------------
@@ -74,6 +90,9 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
         chrome.reset()
         renderer.setStyle(data.styleJson)
         renderer.setMarkers(data.markers)
+        renderer.setDevices(data.devices)
+        renderer.setShapes(data.occupiedShapes)
+        renderer.setUserLocation(location.current)
         renderer.setCamera(data.center, data.zoom)
         invalidate()
     }
@@ -86,7 +105,7 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     }
 
     override fun onScale(focusX: Float, focusY: Float, scaleFactor: Float) {
-        if (!chrome.blockingGesture()) renderer.onZoom(scaleFactor)
+        if (!chrome.blockingGesture()) renderer.onZoomAt(focusX, focusY, scaleFactor)
     }
 
     override fun onClick(x: Float, y: Float) {
@@ -98,7 +117,15 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     // ---- template --------------------------------------------------------
 
     override fun onGetTemplate(): Template {
+        // The host paints this strip over the top-right of our surface, so it
+        // holds the actions rather than duplicating them in the app bar.
         val actions = ActionStrip.Builder()
+            .addAction(
+                Action.Builder()
+                    .setTitle("Odśwież")
+                    .setOnClickListener { load() }
+                    .build(),
+            )
             .addAction(
                 Action.Builder()
                     .setTitle("Zajęte (${data.markers.size})")

@@ -485,6 +485,7 @@ export default function MapScreen() {
     vectorOverlays,
     markers: occupiedMarkers,
     camera: settings.camera,
+    unitName: activeUnit?.name,
     enabled: loaded,
   });
 

@@ -22,6 +22,28 @@ data class CarMapData(
     val zoom: Double,
     val markers: List<CarMarker>,
     val updatedAt: Long,
+    /** Koło name, shown in the app bar exactly as on the phone. */
+    val unit: String? = null,
+    /** Hunting devices, read back out of the published style. */
+    val devices: List<CarDevice> = emptyList(),
+    /** Outlines of the taken rewiry, so a tap anywhere inside one works. */
+    val occupiedShapes: List<CarShape> = emptyList(),
+)
+
+/** An ambona / zwyżka / paśnik …, as the phone's device card shows it. */
+data class CarDevice(
+    val name: String,
+    val type: String,
+    val number: String?,
+    val color: Int,
+    val position: LatLng,
+)
+
+/** A polygon that belongs to a marker, for tap-anywhere hit testing. */
+data class CarShape(
+    val markerId: String,
+    /** Rings of [lng, lat] pairs. */
+    val rings: List<List<DoubleArray>>,
 )
 
 object CarMapStore {
@@ -60,13 +82,108 @@ object CarMapStore {
                 ),
             )
         }
+        val style = root.getJSONObject("style")
         return CarMapData(
-            styleJson = root.getJSONObject("style").toString(),
+            styleJson = style.toString(),
             center = LatLng(cam?.optDouble("lat") ?: 52.0, cam?.optDouble("lng") ?: 19.4),
             zoom = cam?.optDouble("zoom") ?: 12.0,
             markers = markers,
             updatedAt = root.optLong("updatedAt"),
+            unit = root.optString("unit").takeIf { it.isNotBlank() && it != "null" },
+            devices = devicesFrom(style),
+            occupiedShapes = shapesFrom(style, markers),
         )
+    }
+
+    /** Devices are already in the style (`geo-devices`), with the name, type
+     *  and colour the phone draws them with — no second copy is published. */
+    private fun devicesFrom(style: JSONObject): List<CarDevice> {
+        val out = mutableListOf<CarDevice>()
+        val fc = style.optJSONObject("sources")?.optJSONObject("geo-devices")
+            ?.optJSONObject("data") ?: return out
+        val features = fc.optJSONArray("features") ?: return out
+        for (i in 0 until features.length()) {
+            val f = features.optJSONObject(i) ?: continue
+            val coords = f.optJSONObject("geometry")?.optJSONArray("coordinates") ?: continue
+            if (coords.length() < 2) continue
+            val props = f.optJSONObject("properties") ?: JSONObject()
+            out.add(
+                CarDevice(
+                    name = props.optString("name").ifBlank { "Urządzenie" },
+                    type = props.optString("type"),
+                    number = props.optString("number").takeIf { it.isNotBlank() && it != "null" },
+                    color = runCatching { Color.parseColor(props.optString("color")) }
+                        .getOrDefault(Color.DKGRAY),
+                    position = LatLng(coords.optDouble(1), coords.optDouble(0)),
+                ),
+            )
+        }
+        return out
+    }
+
+    /** Outlines of the taken rewiry, matched to their marker by rewir label, so
+     *  tapping inside the red area opens the same card as tapping the pin. */
+    private fun shapesFrom(style: JSONObject, markers: List<CarMarker>): List<CarShape> {
+        val out = mutableListOf<CarShape>()
+        val fc = style.optJSONObject("sources")?.optJSONObject("geo-rewirs-occupied")
+            ?.optJSONObject("data") ?: return out
+        val features = fc.optJSONArray("features") ?: return out
+        for (i in 0 until features.length()) {
+            val f = features.optJSONObject(i) ?: continue
+            val name = f.optJSONObject("properties")?.optString("name") ?: continue
+            val marker = markers.firstOrNull {
+                it.title.removePrefix("Rewir ").trim().equals(name.trim(), ignoreCase = true)
+            } ?: continue
+            val geometry = f.optJSONObject("geometry") ?: continue
+            val rings = mutableListOf<List<DoubleArray>>()
+            when (geometry.optString("type")) {
+                "Polygon" -> geometry.optJSONArray("coordinates")?.let { polygon ->
+                    for (r in 0 until polygon.length()) {
+                        ring(polygon.optJSONArray(r))?.let(rings::add)
+                    }
+                }
+                "MultiPolygon" -> geometry.optJSONArray("coordinates")?.let { multi ->
+                    for (p in 0 until multi.length()) {
+                        val polygon = multi.optJSONArray(p) ?: continue
+                        for (r in 0 until polygon.length()) {
+                            ring(polygon.optJSONArray(r))?.let(rings::add)
+                        }
+                    }
+                }
+            }
+            if (rings.isNotEmpty()) out.add(CarShape(marker.id, rings))
+        }
+        return out
+    }
+
+    private fun ring(arr: JSONArray?): List<DoubleArray>? {
+        if (arr == null || arr.length() < 3) return null
+        val pts = ArrayList<DoubleArray>(arr.length())
+        for (i in 0 until arr.length()) {
+            val p = arr.optJSONArray(i) ?: continue
+            pts.add(doubleArrayOf(p.optDouble(0), p.optDouble(1)))
+        }
+        return pts.takeIf { it.size >= 3 }
+    }
+
+    /** Is a point inside any ring of this shape? (ray casting, lng/lat space) */
+    fun contains(shape: CarShape, lng: Double, lat: Double): Boolean {
+        for (ring in shape.rings) {
+            var inside = false
+            var j = ring.size - 1
+            for (i in ring.indices) {
+                val xi = ring[i][0]; val yi = ring[i][1]
+                val xj = ring[j][0]; val yj = ring[j][1]
+                if ((yi > lat) != (yj > lat) &&
+                    lng < (xj - xi) * (lat - yi) / ((yj - yi).takeIf { it != 0.0 } ?: 1e-12) + xi
+                ) {
+                    inside = !inside
+                }
+                j = i
+            }
+            if (inside) return true
+        }
+        return false
     }
 
     /**

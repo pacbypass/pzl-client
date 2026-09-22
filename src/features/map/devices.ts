@@ -113,6 +113,9 @@ export function devicesToGeo(
         type: d.registerTypeName ?? '',
         typeId: d.registerTypeId ?? 0,
         color: deviceColor(d.registerTypeId),
+        // Carried for the Android Auto card, which shows the same
+        // "type · nr N" line as the phone's device card.
+        number: d.number ?? null,
       },
     }));
   return { type: 'FeatureCollection', features };

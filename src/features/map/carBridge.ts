@@ -46,13 +46,15 @@ export function usePublishCarMap(input: {
   vectorOverlays: VectorOverlay[];
   markers: CarMapMarker[];
   camera: { longitude: number; latitude: number; zoom: number } | null;
+  /** Shown as the car app bar's subtitle, as on the phone. */
+  unitName?: string | null;
   enabled: boolean;
 }) {
   const lastWrite = useRef(0);
   const lastPayload = useRef('');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { activeRasterKeys, vectorOverlays, markers, camera, enabled } = input;
+  const { activeRasterKeys, vectorOverlays, markers, camera, unitName, enabled } = input;
 
   useEffect(() => {
     // Only Android has a car app; the web build has no file system to speak of.
@@ -61,6 +63,7 @@ export function usePublishCarMap(input: {
     const publish = () => {
       try {
         const payload = JSON.stringify({
+          unit: unitName ?? null,
           style: buildMapStyle(activeRasterKeys, vectorOverlays),
           camera: camera
             ? { lng: camera.longitude, lat: camera.latitude, zoom: camera.zoom }
@@ -97,5 +100,5 @@ export function usePublishCarMap(input: {
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [activeRasterKeys, vectorOverlays, markers, camera, enabled]);
+  }, [activeRasterKeys, vectorOverlays, markers, camera, unitName, enabled]);
 }

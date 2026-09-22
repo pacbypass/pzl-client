@@ -29,6 +29,7 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
 
     private lateinit var renderer: CarMapRenderer
     private lateinit var chrome: CarMapChrome
+    private lateinit var location: CarLocation
     private lateinit var scale: ScaleGestureDetector
     private var downX = 0f
     private var downY = 0f
@@ -39,7 +40,14 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         renderer = CarMapRenderer(this)
-        chrome = CarMapChrome(renderer, onRefresh = { reload() })
+        location = CarLocation(this)
+        chrome = CarMapChrome(
+            renderer,
+            onRefresh = { reload() },
+            onLocate = { location.current?.let { renderer.setCamera(it, 14.0) } },
+        )
+        location.onUpdate = { renderer.setUserLocation(location.current) }
+        location.start()
         renderer.overlay = { canvas, w, h -> chrome.draw(canvas, w, h) }
         val view = SurfaceView(this)
         view.holder.addCallback(this)
@@ -87,7 +95,14 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
         chrome.reset()
         renderer.setStyle(data.styleJson)
         renderer.setMarkers(data.markers)
+        renderer.setDevices(data.devices)
+        renderer.setShapes(data.occupiedShapes)
         renderer.setCamera(data.center, data.zoom)
+    }
+
+    override fun onDestroy() {
+        location.stop()
+        super.onDestroy()
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {

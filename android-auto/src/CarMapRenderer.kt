@@ -270,15 +270,27 @@ class CarMapRenderer(private val context: Context) {
     }
 
     /**
-     * A tile that would not decode aborts the snapshot, so the source it came
-     * from is dropped and the map re-rendered without it. Bounded, so a style
-     * that fails for some other reason cannot spin.
+     * A tile that will not decode aborts the whole snapshot, and the error the
+     * snapshotter hands back names no source ("bitmap decoding: couldn't get
+     * bitmap info"), so the bad raster layer is found by elimination: drop one
+     * raster source and re-render, last one first, which sheds overlays before
+     * the base layer the map is built on. Bounded by the number of raster
+     * sources, so this always terminates.
      */
     private fun retryWithout(error: String): Boolean {
         val full = styleJsonFull ?: return false
-        val source = CarStyleFilter.sourceFromError(error) ?: return false
-        if (disabledSources.size >= 6 || !disabledSources.add(source)) return false
-        Log.w(TAG, "dropping source '$source' and retrying without it")
+        val named = CarStyleFilter.sourceFromError(error)
+        val rasters = try {
+            CarStyleFilter.rasterSources(full)
+        } catch (e: Throwable) {
+            Log.e(TAG, "could not read style sources", e)
+            return false
+        }
+        val victim = named?.takeIf { it !in disabledSources }
+            ?: rasters.lastOrNull { it !in disabledSources }
+            ?: return false
+        disabledSources.add(victim)
+        Log.w(TAG, "dropping raster source '$victim' (tiles would not decode) and retrying")
         styleJson = try {
             CarStyleFilter.without(full, disabledSources)
         } catch (e: Throwable) {

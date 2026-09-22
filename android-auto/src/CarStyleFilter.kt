@@ -27,7 +27,27 @@ object CarStyleFilter {
         return root.toString()
     }
 
-    /** The source named in a MapLibre error such as "… for source bdot10k: …". */
+    /** The source named in a MapLibre error such as "… for source bdot10k: …".
+     *  The snapshotter usually reports only "bitmap decoding: …" without it, so
+     *  this is a fast path rather than something to rely on. */
     fun sourceFromError(error: String): String? =
         Regex("for source ([A-Za-z0-9_.:-]+)").find(error)?.groupValues?.getOrNull(1)
+
+    /**
+     * Raster source ids in the order the style draws them — base layer first,
+     * overlays after (see `buildMapStyle`). Dropping from the END therefore
+     * sheds overlays before the layer the map is actually built on.
+     */
+    fun rasterSources(styleJson: String): List<String> {
+        val sources = JSONObject(styleJson).optJSONObject("sources") ?: return emptyList()
+        val layers = JSONObject(styleJson).optJSONArray("layers") ?: return emptyList()
+        val ordered = mutableListOf<String>()
+        for (i in 0 until layers.length()) {
+            val layer = layers.optJSONObject(i) ?: continue
+            val id = layer.optString("source")
+            if (id.isEmpty() || id in ordered) continue
+            if (sources.optJSONObject(id)?.optString("type") == "raster") ordered.add(id)
+        }
+        return ordered
+    }
 }

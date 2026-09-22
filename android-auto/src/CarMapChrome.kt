@@ -120,12 +120,12 @@ class CarMapChrome(
 
         var y = rect.top + ui.dp(34f)
         val rowH = ui.dp(26f)
-        for ((label, on) in CarMapStore.layerSummary(data)) {
+        for ((label, on, unavailable) in CarMapStore.layerSummary(data, renderer.droppedSources())) {
             if (y > rect.bottom - rowH) break
             ui.checkboxRow(
                 canvas,
                 RectF(rect.left + ui.dp(4f), y, rect.right - ui.dp(4f), y + rowH),
-                label,
+                if (unavailable) "$label — niedostępna" else label,
                 on,
             ) { /* read-only: the phone decides which layers are on */ }
             y += rowH

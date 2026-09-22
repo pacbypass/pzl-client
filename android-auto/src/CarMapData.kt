@@ -105,21 +105,24 @@ object CarMapStore {
 
     /**
      * What the phone currently has switched on, read back out of the published
-     * style so the car's layers panel mirrors the phone's without the two
-     * keeping separate settings.
+     * style so the car's panel mirrors the phone's without keeping its own
+     * settings. Vector overlays are named `geo-<key>` by `buildMapStyle`;
+     * raster layers keep their plain key.
      */
-    fun layerSummary(data: CarMapData): List<Pair<String, Boolean>> {
-        val names = mapOf(
+    fun layerSummary(
+        data: CarMapData,
+        dropped: Set<String> = emptySet(),
+    ): List<Triple<String, Boolean, Boolean>> {
+        val names = listOf(
             "osm" to "OpenStreetMap",
             "orto" to "Ortofotomapa (GUGiK)",
             "bdl" to "Lasy Państwowe (BDL)",
             "cadastre" to "Ewidencja gruntów (KIEG)",
             "bdot10k" to "BDOT10k (topografia)",
-            "districts" to "Obwody łowieckie",
-            "rewirs" to "Rewiry",
-            "rewirs-occupied" to "Zajęte rewiry",
-            "devices" to "Urządzenia łowieckie",
-            "occupied-markers" to null,
+            "geo-districts" to "Obwody łowieckie",
+            "geo-rewirs" to "Rewiry",
+            "geo-rewirs-occupied" to "Zajęte rewiry",
+            "geo-devices" to "Urządzenia łowieckie",
         )
         val present = try {
             JSONObject(data.styleJson).optJSONObject("sources")?.keys()?.asSequence()?.toSet()
@@ -127,9 +130,10 @@ object CarMapStore {
         } catch (e: Exception) {
             emptySet<String>()
         }
-        return names.entries
-            .filter { it.value != null }
-            .map { (id, label) -> label!! to present.contains(id) }
-            .filter { it.second }
+        // Triple(label, on, unavailable) — a layer the renderer had to drop is
+        // shown but marked, rather than quietly missing.
+        return names
+            .filter { present.contains(it.first) || dropped.contains(it.first) }
+            .map { (id, label) -> Triple(label, !dropped.contains(id), dropped.contains(id)) }
     }
 }

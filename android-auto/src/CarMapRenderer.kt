@@ -166,6 +166,9 @@ class CarMapRenderer(private val context: Context) {
 
     fun camera(): CameraPosition = camera
 
+    /** Raster sources dropped because their tiles would not decode. */
+    fun droppedSources(): Set<String> = disabledSources.toSet()
+
     // ---- gestures --------------------------------------------------------
 
     /**

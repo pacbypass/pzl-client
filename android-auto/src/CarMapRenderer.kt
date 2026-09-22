@@ -69,12 +69,52 @@ class CarMapRenderer(private val context: Context) {
     // ---- lifecycle -------------------------------------------------------
 
     fun attach(surface: Surface, width: Int, height: Int, dpi: Int) {
-        MapLibre.getInstance(context)
+        Log.i(TAG, "attach ${width}x$height dpi=$dpi valid=${surface.isValid}")
+        try {
+            MapLibre.getInstance(context)
+        } catch (e: Throwable) {
+            Log.e(TAG, "MapLibre init failed", e)
+            status = "Błąd inicjalizacji mapy"
+        }
         this.surface = surface
         this.width = width
         this.height = height
         this.pixelRatio = (dpi / 160f).coerceAtLeast(1f)
+        // Paint immediately: until the first snapshot lands the car screen would
+        // otherwise stay empty, which is indistinguishable from a broken surface.
+        drawStatus()
         rebuildSnapshotter()
+    }
+
+    /** Shown until the first snapshot arrives, and whenever one fails. */
+    private var status: String? = "Ładowanie mapy…"
+
+    private val statusPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(0x2f, 0x6b, 0x26)
+        textSize = 34f
+        textAlign = Paint.Align.CENTER
+    }
+
+    private fun drawStatus() {
+        val surface = surface ?: return
+        if (!surface.isValid) {
+            Log.w(TAG, "drawStatus: surface not valid")
+            return
+        }
+        val canvas = try {
+            surface.lockCanvas(null)
+        } catch (e: Throwable) {
+            Log.e(TAG, "drawStatus lockCanvas failed", e)
+            return
+        }
+        try {
+            canvas.drawColor(Color.rgb(0xF6, 0xF8, 0xF4))
+            status?.let {
+                canvas.drawText(it, width / 2f, height / 2f, statusPaint)
+            }
+        } finally {
+            surface.unlockCanvasAndPost(canvas)
+        }
     }
 
     fun detach() {
@@ -89,6 +129,7 @@ class CarMapRenderer(private val context: Context) {
     // ---- inputs ----------------------------------------------------------
 
     fun setStyle(json: String) {
+        Log.i(TAG, "setStyle ${json.length}B")
         if (json == styleJson) return
         styleJson = json
         rebuildSnapshotter()
@@ -170,8 +211,16 @@ class CarMapRenderer(private val context: Context) {
     // ---- rendering -------------------------------------------------------
 
     private fun rebuildSnapshotter() {
-        val json = styleJson ?: return
-        if (width <= 0 || height <= 0) return
+        val json = styleJson
+        if (json == null) {
+            Log.w(TAG, "rebuildSnapshotter: no style yet")
+            return
+        }
+        if (width <= 0 || height <= 0) {
+            Log.w(TAG, "rebuildSnapshotter: no size yet ($width x $height)")
+            return
+        }
+        Log.i(TAG, "rebuildSnapshotter style=${json.length}B camera=${camera.target}/${camera.zoom}")
         snapshotter?.cancel()
         val options = MapSnapshotter.Options(width, height)
             .withStyleJson(json)
@@ -192,8 +241,10 @@ class CarMapRenderer(private val context: Context) {
         snapshotInFlight = true
         snapshotter.start({ snapshot ->
             snapshotInFlight = false
+            status = null
             lastSnapshot = snapshot
             lastBitmap = snapshot.bitmap
+            Log.i(TAG, "snapshot ready ${snapshot.bitmap.width}x${snapshot.bitmap.height}")
             drawFrame(snapshot.bitmap, 0f, 0f)
             if (snapshotQueued) {
                 snapshotQueued = false
@@ -201,7 +252,9 @@ class CarMapRenderer(private val context: Context) {
             }
         }, { error ->
             snapshotInFlight = false
-            Log.w(TAG, "snapshot failed: $error")
+            Log.e(TAG, "snapshot failed: $error")
+            status = "Nie udało się wczytać mapy"
+            drawStatus()
         })
     }
 
@@ -215,8 +268,8 @@ class CarMapRenderer(private val context: Context) {
         if (!surface.isValid) return
         val canvas: Canvas = try {
             surface.lockCanvas(null)
-        } catch (e: Exception) {
-            Log.w(TAG, "lockCanvas failed", e)
+        } catch (e: Throwable) {
+            Log.e(TAG, "lockCanvas failed", e)
             return
         }
         try {

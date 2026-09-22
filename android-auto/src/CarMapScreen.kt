@@ -7,7 +7,6 @@ import androidx.car.app.SurfaceCallback
 import androidx.car.app.SurfaceContainer
 import androidx.car.app.model.Action
 import androidx.car.app.model.ActionStrip
-import androidx.car.app.model.CarColor
 import androidx.car.app.model.Template
 import androidx.car.app.navigation.model.NavigationTemplate
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -29,6 +28,7 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     }
 
     override fun onCreate(owner: LifecycleOwner) {
+        android.util.Log.i("CarMapScreen", "registering surface callback")
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(this)
     }
 
@@ -39,7 +39,12 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     // ---- surface ---------------------------------------------------------
 
     override fun onSurfaceAvailable(container: SurfaceContainer) {
-        val surface = container.surface ?: return
+        val surface = container.surface
+        android.util.Log.i(
+            "CarMapScreen",
+            "onSurfaceAvailable surface=$surface ${container.width}x${container.height}",
+        )
+        if (surface == null) return
         renderer.attach(surface, container.width, container.height, container.dpi)
         load()
     }
@@ -50,6 +55,10 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
 
     private fun load() {
         data = CarMapStore.readOrFallback(carContext)
+        android.util.Log.i(
+            "CarMapScreen",
+            "load style=${data.styleJson.length}B markers=${data.markers.size} updated=${data.updatedAt}",
+        )
         renderer.setStyle(data.styleJson)
         renderer.setMarkers(data.markers)
         renderer.setCamera(data.center, data.zoom)
@@ -99,7 +108,6 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
         return NavigationTemplate.Builder()
             .setActionStrip(actions)
             .setMapActionStrip(mapActions)
-            .setBackgroundColor(CarColor.PRIMARY)
             .build()
     }
 }

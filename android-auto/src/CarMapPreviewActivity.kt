@@ -28,13 +28,19 @@ import android.widget.FrameLayout
 class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
 
     private lateinit var renderer: CarMapRenderer
+    private lateinit var chrome: CarMapChrome
     private lateinit var scale: ScaleGestureDetector
+    private var downX = 0f
+    private var downY = 0f
+    private var dragged = false
     private var lastX = 0f
     private var lastY = 0f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         renderer = CarMapRenderer(this)
+        chrome = CarMapChrome(renderer, onRefresh = { reload() })
+        renderer.overlay = { canvas, w, h -> chrome.draw(canvas, w, h) }
         val view = SurfaceView(this)
         view.holder.addCallback(this)
         val w = intent.getIntExtra("w", 0)
@@ -67,7 +73,13 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         renderer.attach(holder.surface, width, height, resources.displayMetrics.densityDpi)
+        reload()
+    }
+
+    private fun reload() {
         val data = CarMapStore.readOrFallback(this)
+        chrome.data = data
+        chrome.reset()
         renderer.setStyle(data.styleJson)
         renderer.setMarkers(data.markers)
         renderer.setCamera(data.center, data.zoom)
@@ -83,11 +95,24 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
             MotionEvent.ACTION_DOWN -> {
                 lastX = event.x
                 lastY = event.y
+                downX = event.x
+                downY = event.y
+                dragged = false
             }
             MotionEvent.ACTION_MOVE -> if (!scale.isInProgress) {
-                renderer.onDrag(event.x - lastX, event.y - lastY)
+                if (Math.hypot((event.x - downX).toDouble(), (event.y - downY).toDouble()) > 12) {
+                    dragged = true
+                }
+                if (!chrome.blockingGesture() && dragged) {
+                    renderer.onDrag(event.x - lastX, event.y - lastY)
+                }
                 lastX = event.x
                 lastY = event.y
+            }
+            MotionEvent.ACTION_UP -> if (!dragged) {
+                // Same routing as the car: chrome first, then the map's markers.
+                chrome.tap(event.x, event.y)
+                renderer.redraw()
             }
         }
         return true

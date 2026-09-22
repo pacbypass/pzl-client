@@ -51,9 +51,7 @@ class CarMapChrome(
         ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(82f), CarUi.Icon.LOCATE) {
             renderer.setCamera(data.center, 13.0)
         }
-        onOpenList?.let { open ->
-            ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(134f), CarUi.Icon.REFRESH) { open() }
-        }
+
 
         selected?.let { drawHunterCard(canvas, w, h, it) }
         if (layersOpen) drawLayersPanel(canvas, w, h, barBottom)
@@ -101,7 +99,7 @@ class CarMapChrome(
             )
             y += ui.dp(16f)
         }
-        ui.fab(canvas, rect.right - ui.dp(18f), rect.top + ui.dp(16f), CarUi.Icon.CLOSE) {
+        ui.iconButton(canvas, rect.right - ui.dp(16f), rect.top + ui.dp(15f), CarUi.Icon.CLOSE) {
             selected = null
         }
     }
@@ -116,7 +114,7 @@ class CarMapChrome(
             canvas, "Warstwy", rect.left + ui.dp(13f), rect.top + ui.dp(22f),
             ui.dp(15f), CarTheme.onSurface, bold = true,
         )
-        ui.fab(canvas, rect.right - ui.dp(20f), rect.top + ui.dp(18f), CarUi.Icon.CLOSE) {
+        ui.iconButton(canvas, rect.right - ui.dp(18f), rect.top + ui.dp(17f), CarUi.Icon.CLOSE) {
             layersOpen = false
         }
 

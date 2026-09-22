@@ -153,6 +153,20 @@ class CarUi {
         hotspot(RectF(cx - r, cy - r, cx + r, cy + r), onTap)
     }
 
+    /** A bare icon with a tap target — for close buttons inside cards, where a
+     *  filled FAB would shout over the content. */
+    fun iconButton(canvas: Canvas, cx: Float, cy: Float, icon: Icon, color: Int = CarTheme.muted, onTap: () -> Unit) {
+        val r = dp(9f)
+        when (icon) {
+            Icon.CLOSE -> iconClose(canvas, cx, cy, r, color)
+            Icon.LAYERS -> iconLayers(canvas, cx, cy, r, color)
+            Icon.LOCATE -> iconLocate(canvas, cx, cy, r, color)
+            Icon.REFRESH -> iconRefresh(canvas, cx, cy, r, color)
+        }
+        val touch = dp(18f)
+        hotspot(RectF(cx - touch, cy - touch, cx + touch, cy + touch), onTap)
+    }
+
     fun checkboxRow(
         canvas: Canvas,
         rect: RectF,

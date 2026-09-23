@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Rewiry",
+    "name": "Polowanie",
     "slug": "pzl-client",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -24,7 +24,7 @@
       }
     },
     "android": {
-      "package": "pl.pacbypass.rewiry",
+      "package": "pl.pacbypass.polowanie",
       "adaptiveIcon": {
         "backgroundColor": "#2f6b26"
       },

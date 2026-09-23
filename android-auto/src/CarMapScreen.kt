@@ -117,7 +117,12 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
 
     /** Refresh reloads whichever tab is in front. */
     private fun refresh() {
-        if (chrome.tab() == CarTab.BOOK) chrome.reloadBook() else load()
+        if (chrome.tab() == CarTab.BOOK) {
+            chrome.reloadBook()
+        } else {
+            renderer.retryDroppedSources()
+            load()
+        }
     }
 
     override fun onScale(focusX: Float, focusY: Float, scaleFactor: Float) {

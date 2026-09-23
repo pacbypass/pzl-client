@@ -28,6 +28,10 @@ class CarBookView(
     private var page = 0
     private var loading = false
     private var error: String? = null
+    /** When the entries on screen were fetched; older than a minute or so and
+     *  the header says as much, the way the phone's DataAge chip does. */
+    private var fetchedAt = 0L
+    private var offline = false
     private var scroll = 0f
     private var pickerOpen = false
     private var contentHeight = 0f
@@ -52,14 +56,18 @@ class CarBookView(
         page = 1
         CarApi.book(
             context, id, 1,
-            onResult = { list, t ->
+            onResult = { list, t, at ->
                 entries = list
                 total = t
+                fetchedAt = at
+                offline = System.currentTimeMillis() - at > 60_000
                 loading = false
                 onChanged()
             },
-            onError = {
-                error = it
+            onError = { message, _, _, _ ->
+                // Keep whatever is already on screen; an empty list with an
+                // error is worse than stale entries in the woods.
+                error = message
                 loading = false
                 onChanged()
             },
@@ -73,17 +81,18 @@ class CarBookView(
         val next = page + 1
         CarApi.book(
             context, id, next,
-            onResult = { list, t ->
+            onResult = { list, t, at ->
                 page = next
                 total = t
+                if (at > 0 && System.currentTimeMillis() - at > 60_000) offline = true
                 // Dedupe: a page boundary can overlap when an entry is added.
                 val seen = entries.map { it.id }.toSet()
                 entries = entries + list.filter { it.id !in seen }
                 loading = false
                 onChanged()
             },
-            onError = {
-                error = it
+            onError = { message, _, _, _ ->
+                error = message
                 loading = false
                 onChanged()
             },
@@ -118,17 +127,23 @@ class CarBookView(
             onChanged()
         }
         val year = CarApi.access(context)?.year
+        val stale = when {
+            error != null && entries.isNotEmpty() -> "offline · dane ${age()}"
+            offline -> "dane ${age()}"
+            else -> null
+        }
         ui.label(
             canvas,
             listOfNotNull(
                 year?.let { "$it-${it + 1}" },
                 "$active na polowaniu",
                 if (total > 0) "$total wpisów" else null,
+                stale,
             ).joinToString(" · "),
             chip.right + ui.dp(10f),
             chip.centerY() + ui.dp(4f),
             ui.dp(12f),
-            CarTheme.muted,
+            if (stale != null) CarTheme.harvest else CarTheme.muted,
         )
 
         val listTop = chip.bottom + ui.dp(4f)
@@ -138,8 +153,21 @@ class CarBookView(
         if (pickerOpen) drawPicker(canvas, w, height.toFloat(), barBottom)
     }
 
+    private fun age(): String {
+        if (fetchedAt <= 0L) return "z pamięci"
+        val mins = (System.currentTimeMillis() - fetchedAt) / 60000
+        return when {
+            mins < 1 -> "sprzed chwili"
+            mins < 60 -> "sprzed $mins min"
+            mins < 60 * 24 -> "sprzed ${mins / 60} godz."
+            else -> "sprzed ${mins / (60 * 24)} dni"
+        }
+    }
+
     private fun drawList(canvas: Canvas, w: Float, top: Float, bottom: Float) {
-        if (error != null) {
+        // An error only takes the screen when there is nothing to show; with
+        // entries in hand it is a note in the header instead.
+        if (error != null && entries.isEmpty()) {
             ui.label(canvas, error!!, ui.dp(14f), top + ui.dp(22f), ui.dp(13f), CarTheme.occupied)
             return
         }

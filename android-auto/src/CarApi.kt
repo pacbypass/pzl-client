@@ -110,18 +110,31 @@ object CarApi {
 
     enum class Status { CROSSED, CLOSED, OVERDUE, ACTIVE }
 
-    /** Book page for one obwód. Runs off the main thread; the callback comes
-     *  back on it, because it ends in a surface repaint. */
+    /**
+     * Book page for one obwód. Runs off the main thread; the callback comes
+     * back on it, because it ends in a surface repaint.
+     *
+     * Every page that arrives is written to disk, and any failure — no signal
+     * in the woods, an expired session that cannot be renewed offline — falls
+     * back to that copy rather than emptying the screen. The phone behaves the
+     * same way (its query cache is persisted and it never drops a session on a
+     * network error); the car has no business being stricter.
+     */
     fun book(
         context: Context,
         districtId: String,
         page: Int,
-        onResult: (List<Entry>, Int) -> Unit,
-        onError: (String) -> Unit,
+        onResult: (List<Entry>, Int, Long) -> Unit,
+        onError: (String, List<Entry>, Int, Long) -> Unit,
     ) {
         val access = access(context)
         if (access == null) {
-            onError("Brak danych logowania z telefonu")
+            val cached = readCache(context, districtId, page)
+            if (cached != null) {
+                main { onResult(cached.first, cached.second, cached.third) }
+            } else {
+                onError("Brak danych z telefonu", emptyList(), 0, 0L)
+            }
             return
         }
         io.execute {
@@ -146,12 +159,53 @@ object CarApi {
                 val entries = (0 until arr.length()).mapNotNull { i ->
                     arr.optJSONObject(i)?.let(::entry)
                 }
-                main { onResult(entries, total) }
+                writeCache(context, districtId, page, body)
+                main { onResult(entries, total, System.currentTimeMillis()) }
             } catch (e: Exception) {
-                Log.w(TAG, "book failed", e)
-                main { onError(e.message ?: "Błąd połączenia") }
+                Log.w(TAG, "book failed: ${e.message}")
+                val cached = readCache(context, districtId, page)
+                if (cached != null) {
+                    Log.i(TAG, "serving page $page of $districtId from cache")
+                    main { onResult(cached.first, cached.second, cached.third) }
+                } else {
+                    main { onError(e.message ?: "Błąd połączenia", emptyList(), 0, 0L) }
+                }
             }
         }
+    }
+
+    // ---- offline copy ----------------------------------------------------
+
+    private fun cacheFile(context: Context, districtId: String, page: Int) =
+        java.io.File(context.filesDir, "car-book-$districtId-$page.json")
+
+    private fun writeCache(context: Context, districtId: String, page: Int, body: String) {
+        try {
+            cacheFile(context, districtId, page).writeText(body)
+        } catch (e: Exception) {
+            Log.w(TAG, "could not cache book page", e)
+        }
+    }
+
+    /** @return entries, total and when it was stored, or null when absent. */
+    private fun readCache(
+        context: Context,
+        districtId: String,
+        page: Int,
+    ): Triple<List<Entry>, Int, Long>? = try {
+        val f = cacheFile(context, districtId, page)
+        if (!f.exists()) null else {
+            val root = JSONObject(f.readText())
+            val arr = root.optJSONArray("result") ?: JSONArray()
+            Triple(
+                (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(::entry) },
+                root.optInt("total", arr.length()),
+                f.lastModified(),
+            )
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "unreadable book cache", e)
+        null
     }
 
     private class Unauthorized : Exception("401")

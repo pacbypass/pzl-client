@@ -431,6 +431,21 @@ class CarMapRenderer(private val context: Context) {
     /** Repaint after the chrome changed (a panel opened, a card was closed). */
     fun redraw() = redrawLastFrame()
 
+    /**
+     * Give up on the layers that were dropped and render the full style again.
+     * Offline, every raster source fails and gets dropped one by one until only
+     * the vector data is left — which is the right thing to show in the woods —
+     * but those layers must come back once there is signal, and a refresh with
+     * an unchanged style would otherwise be a no-op.
+     */
+    fun retryDroppedSources() {
+        if (disabledSources.isEmpty()) return
+        Log.i(TAG, "retrying ${disabledSources.size} dropped source(s)")
+        disabledSources.clear()
+        styleJson = styleJsonFull
+        rebuildSnapshotter()
+    }
+
     private fun drawFrame(bitmap: Bitmap, offsetX: Float, offsetY: Float) {
         val surface = surface ?: return
         if (!surface.isValid) return

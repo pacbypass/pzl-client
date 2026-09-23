@@ -56,15 +56,17 @@ class CarBookView(
         page = 1
         CarApi.book(
             context, id, 1,
-            onResult = { list, t, at ->
+            onResult = { list, t, at, fromCache ->
                 entries = list
                 total = t
                 fetchedAt = at
-                offline = System.currentTimeMillis() - at > 60_000
+                // Say it plainly when the data did not come from the network,
+                // however fresh the copy happens to be.
+                offline = fromCache
                 loading = false
                 onChanged()
             },
-            onError = { message, _, _, _ ->
+            onError = { message ->
                 // Keep whatever is already on screen; an empty list with an
                 // error is worse than stale entries in the woods.
                 error = message
@@ -81,17 +83,17 @@ class CarBookView(
         val next = page + 1
         CarApi.book(
             context, id, next,
-            onResult = { list, t, at ->
+            onResult = { list, t, at, fromCache ->
                 page = next
                 total = t
-                if (at > 0 && System.currentTimeMillis() - at > 60_000) offline = true
+                if (fromCache) offline = true
                 // Dedupe: a page boundary can overlap when an entry is added.
                 val seen = entries.map { it.id }.toSet()
                 entries = entries + list.filter { it.id !in seen }
                 loading = false
                 onChanged()
             },
-            onError = { message, _, _, _ ->
+            onError = { message ->
                 error = message
                 loading = false
                 onChanged()
@@ -128,8 +130,8 @@ class CarBookView(
         }
         val year = CarApi.access(context)?.year
         val stale = when {
+            offline -> "offline · dane ${age()}"
             error != null && entries.isNotEmpty() -> "offline · dane ${age()}"
-            offline -> "dane ${age()}"
             else -> null
         }
         ui.label(

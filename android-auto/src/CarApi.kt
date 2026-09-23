@@ -124,16 +124,17 @@ object CarApi {
         context: Context,
         districtId: String,
         page: Int,
-        onResult: (List<Entry>, Int, Long) -> Unit,
-        onError: (String, List<Entry>, Int, Long) -> Unit,
+        /** entries, total, when they were fetched, whether from the cache */
+        onResult: (List<Entry>, Int, Long, Boolean) -> Unit,
+        onError: (String) -> Unit,
     ) {
         val access = access(context)
         if (access == null) {
             val cached = readCache(context, districtId, page)
             if (cached != null) {
-                main { onResult(cached.first, cached.second, cached.third) }
+                main { onResult(cached.first, cached.second, cached.third, true) }
             } else {
-                onError("Brak danych z telefonu", emptyList(), 0, 0L)
+                onError("Brak danych z telefonu")
             }
             return
         }
@@ -160,15 +161,15 @@ object CarApi {
                     arr.optJSONObject(i)?.let(::entry)
                 }
                 writeCache(context, districtId, page, body)
-                main { onResult(entries, total, System.currentTimeMillis()) }
+                main { onResult(entries, total, System.currentTimeMillis(), false) }
             } catch (e: Exception) {
                 Log.w(TAG, "book failed: ${e.message}")
                 val cached = readCache(context, districtId, page)
                 if (cached != null) {
                     Log.i(TAG, "serving page $page of $districtId from cache")
-                    main { onResult(cached.first, cached.second, cached.third) }
+                    main { onResult(cached.first, cached.second, cached.third, true) }
                 } else {
-                    main { onError(e.message ?: "Błąd połączenia", emptyList(), 0, 0L) }
+                    main { onError(e.message ?: "Błąd połączenia") }
                 }
             }
         }

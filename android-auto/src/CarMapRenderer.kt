@@ -34,7 +34,27 @@ class CarMapRenderer(private val context: Context) {
         private const val TAG = "CarMapRenderer"
         /** Poland, so an unpositioned map still shows something sensible. */
         private val FALLBACK = LatLng(52.0, 19.4)
+        /**
+         * The map is rendered LARGER than the screen and the visible window is
+         * blitted out of it. Panning then shows real map instead of empty edges
+         * and only needs a fresh render once the drag approaches the margin,
+         * which is what makes dragging feel immediate despite each snapshot
+         * costing a few hundred milliseconds.
+         */
+        private const val OVERSCAN = 1.6f
     }
+
+    /** Size of the rendered bitmap (surface size × OVERSCAN). */
+    private var bufferW = 0
+    private var bufferH = 0
+
+    /** Offset of the visible window inside the rendered bitmap. */
+    private fun marginX() = (bufferW - width) / 2f
+    private fun marginY() = (bufferH - height) / 2f
+
+    /** Screen pixel → pixel in the rendered bitmap. */
+    private fun toBufferX(x: Float) = x + marginX() - dragX
+    private fun toBufferY(y: Float) = y + marginY() - dragY
 
     private val main = Handler(Looper.getMainLooper())
     private val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -188,9 +208,11 @@ class CarMapRenderer(private val context: Context) {
         val snapshot = lastSnapshot ?: return null
         var best: CarDevice? = null
         var bestDist = tolerance
+        val bx = toBufferX(x)
+        val by = toBufferY(y)
         for (d in devices) {
             val p = snapshot.pixelForLatLng(d.position)
-            val dist = Math.hypot((p.x - x).toDouble(), (p.y - y).toDouble()).toFloat()
+            val dist = Math.hypot((p.x - bx).toDouble(), (p.y - by).toDouble()).toFloat()
             if (dist < bestDist) {
                 bestDist = dist
                 best = d
@@ -203,20 +225,18 @@ class CarMapRenderer(private val context: Context) {
     fun markerDistanceTo(x: Float, y: Float, position: LatLng): Float {
         val snapshot = lastSnapshot ?: return Float.MAX_VALUE
         val p = snapshot.pixelForLatLng(position)
-        return Math.hypot((p.x - x).toDouble(), (p.y - y).toDouble()).toFloat()
+        return Math.hypot((p.x - toBufferX(x)).toDouble(), (p.y - toBufferY(y)).toDouble())
+            .toFloat()
     }
 
     /** Distance in pixels to the nearest rewir pin, for "which is closer" checks. */
-    fun markerDistance(x: Float, y: Float, marker: CarMarker): Float {
-        val snapshot = lastSnapshot ?: return Float.MAX_VALUE
-        val p = snapshot.pixelForLatLng(marker.position)
-        return Math.hypot((p.x - x).toDouble(), (p.y - y).toDouble()).toFloat()
-    }
+    fun markerDistance(x: Float, y: Float, marker: CarMarker): Float =
+        markerDistanceTo(x, y, marker.position)
 
     /** The taken rewir whose polygon contains this tap, if any. */
     fun shapeAt(x: Float, y: Float): CarMarker? {
         val snapshot = lastSnapshot ?: return null
-        val at = snapshot.latLngForPixel(PointF(x, y)) ?: return null
+        val at = snapshot.latLngForPixel(PointF(toBufferX(x), toBufferY(y))) ?: return null
         for (shape in shapes) {
             if (CarMapStore.contains(shape, at.longitude, at.latitude)) {
                 return markers.firstOrNull { it.id == shape.markerId }
@@ -242,7 +262,10 @@ class CarMapRenderer(private val context: Context) {
         dragY += dy
         redrawLastFrame()
         main.removeCallbacks(commitDrag)
-        main.postDelayed(commitDrag, 160)
+        // Inside the rendered margin the blit shows real map, so re-rendering
+        // can wait; near the edge it cannot.
+        val nearEdge = Math.abs(dragX) > marginX() * 0.7f || Math.abs(dragY) > marginY() * 0.7f
+        main.postDelayed(commitDrag, if (nearEdge) 60 else 400)
     }
 
     private val commitDrag = Runnable { onDragEnd() }
@@ -254,9 +277,10 @@ class CarMapRenderer(private val context: Context) {
             dragX = 0f; dragY = 0f
             return
         }
-        // The pixel under the screen centre AFTER the drag becomes the new centre.
+        // The pixel under the screen centre AFTER the drag becomes the new
+        // centre — in buffer space, where the projection lives.
         val target = snapshot.latLngForPixel(
-            PointF(width / 2f - dragX, height / 2f - dragY),
+            PointF(bufferW / 2f - dragX, bufferH / 2f - dragY),
         )
         dragX = 0f
         dragY = 0f
@@ -278,10 +302,12 @@ class CarMapRenderer(private val context: Context) {
             setCamera(camera.target ?: FALLBACK, zoom)
             return
         }
-        val cx = width / 2f
-        val cy = height / 2f
+        val cx = bufferW / 2f
+        val cy = bufferH / 2f
+        val fx = toBufferX(focusX)
+        val fy = toBufferY(focusY)
         val target = snapshot.latLngForPixel(
-            PointF(cx + (focusX - cx) * (1f - 1f / k), cy + (focusY - cy) * (1f - 1f / k)),
+            PointF(cx + (fx - cx) * (1f - 1f / k), cy + (fy - cy) * (1f - 1f / k)),
         ) ?: camera.target ?: FALLBACK
         setCamera(target, zoom)
     }
@@ -291,9 +317,11 @@ class CarMapRenderer(private val context: Context) {
         val snapshot = lastSnapshot ?: return null
         var best: CarMarker? = null
         var bestDist = tolerance
+        val bx = toBufferX(x)
+        val by = toBufferY(y)
         for (m in markers) {
             val p = snapshot.pixelForLatLng(m.position)
-            val d = Math.hypot((p.x - x).toDouble(), (p.y - y).toDouble()).toFloat()
+            val d = Math.hypot((p.x - bx).toDouble(), (p.y - by).toDouble()).toFloat()
             if (d < bestDist) {
                 bestDist = d
                 best = m
@@ -316,7 +344,9 @@ class CarMapRenderer(private val context: Context) {
         }
         Log.i(TAG, "rebuildSnapshotter style=${json.length}B camera=${camera.target}/${camera.zoom}")
         snapshotter?.cancel()
-        val options = MapSnapshotter.Options(width, height)
+        bufferW = (width * OVERSCAN).toInt()
+        bufferH = (height * OVERSCAN).toInt()
+        val options = MapSnapshotter.Options(bufferW, bufferH)
             .withStyleJson(json)
             .withCameraPosition(camera)
             .withPixelRatio(1f) // the surface is already in device pixels
@@ -412,7 +442,7 @@ class CarMapRenderer(private val context: Context) {
         }
         try {
             canvas.drawColor(Color.rgb(0xE6, 0xED, 0xE1))
-            canvas.drawBitmap(bitmap, offsetX, offsetY, null)
+            canvas.drawBitmap(bitmap, offsetX - marginX(), offsetY - marginY(), null)
             drawOverlays(canvas, offsetX, offsetY)
             overlay?.invoke(canvas, width, height)
         } finally {
@@ -425,8 +455,8 @@ class CarMapRenderer(private val context: Context) {
         val snapshot = lastSnapshot ?: return
         for (m in markers) {
             val p = snapshot.pixelForLatLng(m.position)
-            val x = p.x + offsetX
-            val y = p.y + offsetY
+            val x = p.x + offsetX - marginX()
+            val y = p.y + offsetY - marginY()
             markerPaint.color = m.color
             canvas.drawCircle(x, y, 14f, markerPaint)
             canvas.drawCircle(x, y, 14f, strokePaint)
@@ -436,14 +466,14 @@ class CarMapRenderer(private val context: Context) {
             val p = snapshot.pixelForLatLng(it)
             strokePaint.color = Color.rgb(0x15, 0x65, 0xC0)
             strokePaint.strokeWidth = 3f
-            canvas.drawCircle(p.x + offsetX, p.y + offsetY, 15f, strokePaint)
+            canvas.drawCircle(p.x + offsetX - marginX(), p.y + offsetY - marginY(), 15f, strokePaint)
             strokePaint.color = Color.WHITE
             strokePaint.strokeWidth = 4f
         }
         userLocation?.let {
             val p = snapshot.pixelForLatLng(it)
-            val x = p.x + offsetX
-            val y = p.y + offsetY
+            val x = p.x + offsetX - marginX()
+            val y = p.y + offsetY - marginY()
             markerPaint.color = Color.rgb(0x15, 0x65, 0xC0)
             canvas.drawCircle(x, y, 12f, markerPaint)
             canvas.drawCircle(x, y, 12f, strokePaint)

@@ -37,6 +37,12 @@ class CarUi {
     companion object {
         /** The phone's "po czasie" card background. */
         val OVERDUE_CARD = android.graphics.Color.rgb(0xFF, 0xB3, 0xAB)
+        /** "Na polowaniu" — the phone's primaryContainer, deepened so it reads
+         *  as a different card at arm's length in a car. */
+        val ACTIVE_CARD = android.graphics.Color.rgb(0xC8, 0xE6, 0xC0)
+        /** Finished / crossed out — neutral, so it cannot be confused with the
+         *  green one (the phone's two greens are nearly identical up close). */
+        val DONE_CARD = android.graphics.Color.rgb(0xE9, 0xE9, 0xE7)
     }
 
 

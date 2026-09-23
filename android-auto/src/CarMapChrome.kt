@@ -26,6 +26,10 @@ class CarMapChrome(
     private val book = CarBookView(context, ui) { renderer.redraw() }
     private var tab = CarTab.MAP
 
+    /** Called when the tab changes, so the host's action strip can be rebuilt
+     *  — its actions differ per tab. */
+    var onTabChanged: (() -> Unit)? = null
+
     var data: CarMapData = CarMapStore.fallback()
     private var selected: CarMarker? = null
     private var selectedDevice: CarDevice? = null
@@ -92,29 +96,29 @@ class CarMapChrome(
             return
         }
 
-        // In the car the app bar carries no buttons: the host paints its own
-        // action strip over the top-right of this surface and anything drawn
-        // there would sit underneath it. The dev harness has no such strip, so
-        // it keeps the refresh button.
-        val barBottom = ui.appBar(
-            canvas,
-            width,
-            "Mapa",
-            subtitle(),
-            if (showRefresh) onRefresh else null,
-        )
+        // No app bar on the map either: the whole point of this screen is the
+        // map, and the host already paints its own strip over the top. The
+        // status line is drawn small, bottom-left, above the legend.
+        val barBottom = 0f
+        if (showRefresh) {
+            // Only the dev harness needs a refresh control of its own.
+            ui.fab(canvas, w - ui.dp(34f), ui.dp(24f), CarUi.Icon.REFRESH) { onRefresh() }
+        }
 
-        ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(46f), CarUi.Icon.LAYERS) {
+        ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(76f), CarUi.Icon.LAYERS) {
             layersOpen = !layersOpen
             selected = null
             selectedDevice = null
             renderer.setHighlight(null)
         }
-        ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(98f), CarUi.Icon.LOCATE) {
+        ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(128f), CarUi.Icon.LOCATE) {
             onLocate?.invoke()
         }
 
-        if (!layersOpen) drawLegend(canvas, h)
+        if (!layersOpen) {
+            drawLegend(canvas, h)
+            ui.label(canvas, subtitle(), ui.dp(10f), h - ui.dp(4f), ui.dp(11f), CarTheme.muted)
+        }
         selected?.let { drawHunterCard(canvas, w, h, it) }
         selectedDevice?.let { drawDeviceCard(canvas, w, h, it) }
         if (layersOpen) drawLayersPanel(canvas, w, h, barBottom)
@@ -129,6 +133,7 @@ class CarMapChrome(
             selectedDevice = null
             renderer.setHighlight(null)
             if (tab == CarTab.BOOK) book.activate()
+            onTabChanged?.invoke()
         }
     }
 
@@ -161,9 +166,9 @@ class CarMapChrome(
         val rowH = ui.dp(15f)
         val rect = RectF(
             ui.dp(10f),
-            h - ui.dp(14f) - types.size * rowH,
+            h - ui.dp(30f) - types.size * rowH,
             ui.dp(132f),
-            h - ui.dp(8f),
+            h - ui.dp(24f),
         )
         ui.card(canvas, rect, CarTheme.surface, ui.dp(10f))
         var y = rect.top + ui.dp(13f)

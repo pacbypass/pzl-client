@@ -108,33 +108,30 @@ class CarBookView(
         val active = entries.count {
             it.status == CarApi.Status.ACTIVE || it.status == CarApi.Status.OVERDUE
         }
-        val barBottom = ui.appBar(
-            canvas,
-            width,
-            "Książka ewidencji",
-            "$active na polowaniu · ${if (total > 0) "$total wpisów" else "…"}",
-        )
 
-        // Obwód chip — the only selector here; the season is fixed to the
-        // current hunting year.
-        val chip = RectF(ui.dp(10f), barBottom + ui.dp(6f), ui.dp(120f), barBottom + ui.dp(28f))
+        // No app bar: on a 400px screen a title strip costs a whole entry. The
+        // obwód chip doubles as the header, with the counts beside it.
+        val barBottom = 0f
+        val chip = RectF(ui.dp(8f), ui.dp(5f), ui.dp(112f), ui.dp(27f))
         ui.chip(canvas, chip, "Obwód $districtLabel") {
             pickerOpen = true
             onChanged()
         }
         val year = CarApi.access(context)?.year
-        if (year != null) {
-            ui.label(
-                canvas,
-                "$year-${year + 1}",
-                chip.right + ui.dp(12f),
-                chip.centerY() + ui.dp(4f),
-                ui.dp(12f),
-                CarTheme.muted,
-            )
-        }
+        ui.label(
+            canvas,
+            listOfNotNull(
+                year?.let { "$it-${it + 1}" },
+                "$active na polowaniu",
+                if (total > 0) "$total wpisów" else null,
+            ).joinToString(" · "),
+            chip.right + ui.dp(10f),
+            chip.centerY() + ui.dp(4f),
+            ui.dp(12f),
+            CarTheme.muted,
+        )
 
-        val listTop = chip.bottom + ui.dp(6f)
+        val listTop = chip.bottom + ui.dp(4f)
         viewportHeight = bottom - listTop
         drawList(canvas, w, listTop, bottom)
 
@@ -172,9 +169,9 @@ class CarBookView(
     private fun drawEntry(canvas: Canvas, w: Float, y: Float, rowH: Float, e: CarApi.Entry) {
         val rect = RectF(ui.dp(10f), y, w - ui.dp(10f), y + rowH)
         val bg = when (e.status) {
-            CarApi.Status.ACTIVE -> CarTheme.greenSurface
+            CarApi.Status.ACTIVE -> CarUi.ACTIVE_CARD
             CarApi.Status.OVERDUE -> CarUi.OVERDUE_CARD
-            else -> CarTheme.surfaceVariant
+            else -> CarUi.DONE_CARD
         }
         ui.card(canvas, rect, bg, ui.dp(10f))
 

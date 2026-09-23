@@ -38,6 +38,9 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     init {
         lifecycle.addObserver(this)
         renderer.overlay = { canvas, w, h -> chrome.draw(canvas, w, h) }
+        // The strip's actions depend on the tab, so rebuild the template when
+        // it changes: "Zajęte" belongs to the map, not to the book.
+        chrome.onTabChanged = { invalidate() }
     }
 
     override fun onCreate(owner: LifecycleOwner) {
@@ -82,7 +85,12 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     }
 
     private fun load() {
+        val previous = data.updatedAt
         data = CarMapStore.readOrFallback(carContext)
+        android.util.Log.i(
+            TAG,
+            "refresh: file ${if (data.updatedAt == previous) "unchanged" else "updated"}",
+        )
         android.util.Log.i(
             TAG,
             "load style=${data.styleJson.length}B markers=${data.markers.size} updated=${data.updatedAt}",
@@ -126,7 +134,7 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
 
     override fun onGetTemplate(): Template {
         // The host paints this strip over the top-right of our surface, so it
-        // holds the actions rather than duplicating them in the app bar.
+        // holds the actions rather than duplicating them on the map itself.
         val actions = ActionStrip.Builder()
             .addAction(
                 Action.Builder()
@@ -134,12 +142,18 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
                     .setOnClickListener { refresh() }
                     .build(),
             )
-            .addAction(
-                Action.Builder()
-                    .setTitle("Zajęte (${data.markers.size})")
-                    .setOnClickListener { screenManager.push(OccupiedListScreen(carContext, data.markers)) }
-                    .build(),
-            )
+            .apply {
+                if (chrome.tab() == CarTab.MAP) {
+                    addAction(
+                        Action.Builder()
+                            .setTitle("Zajęte (${data.markers.size})")
+                            .setOnClickListener {
+                                screenManager.push(OccupiedListScreen(carContext, data.markers))
+                            }
+                            .build(),
+                    )
+                }
+            }
             .build()
 
         val mapActions = ActionStrip.Builder()

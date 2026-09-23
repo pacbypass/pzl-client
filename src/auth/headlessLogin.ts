@@ -96,16 +96,11 @@ export async function headlessLogin(
   }
   const j = (await tr.json()) as {
     access_token: string;
-    refresh_token?: string;
     id_token?: string;
     expires_in?: number;
   };
   return {
     accessToken: j.access_token,
-    // Kept so a session can be renewed without logging in again — the phone
-    // already knows how (authToken.ts), and the car app needs it to keep
-    // working while the phone app is closed.
-    refreshToken: j.refresh_token,
     idToken: j.id_token,
     expiresAt: j.expires_in ? Date.now() + j.expires_in * 1000 : undefined,
     clientId: web.clientId,

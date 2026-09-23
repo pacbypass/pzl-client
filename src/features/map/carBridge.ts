@@ -1,9 +1,10 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { File, Paths } from 'expo-file-system';
 import { buildMapStyle, type VectorOverlay } from '@/map/style';
 import type { OccupiedRewir } from '@/features/map/occupied';
 import { useAuth } from '@/auth/AuthProvider';
+import { loadCredentials, type Credentials } from '@/auth/tokenStore';
 import { useUnits } from '@/units/UnitProvider';
 import { config } from '@/config';
 import {
@@ -70,6 +71,21 @@ export function usePublishCarMap(input: {
   // Android Auto config plugin.
   const { tokens } = useAuth();
   const { activeUnitId } = useUnits();
+  // Whatever the user already chose to save for automatic re-login. When they
+  // did not tick "zapamiętaj", nothing is published and the car falls back to
+  // the published token until it expires.
+  const [credentials, setCredentials] = useState<Credentials | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadCredentials()
+      .then((c) => {
+        if (!cancelled) setCredentials(c);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [tokens?.accessToken]);
   const years = useHuntingYears();
   const districts = useHuntingDistrictOptions(activeUnitId ?? '');
   const year =
@@ -88,12 +104,29 @@ export function usePublishCarMap(input: {
           api: {
             baseUrl: config.apiBaseUrl,
             token,
-            // So the car can renew the session itself: an access token outlives
-            // neither a long drive nor a week of not opening the phone app.
-            refreshToken: tokens?.refreshToken ?? null,
-            clientId: tokens?.clientId ?? config.oidc.web.clientId,
-            tokenEndpoint: config.oidc.tokenEndpoint,
             expiresAt: tokens?.expiresAt ?? null,
+            /**
+             * The car signs in for itself when that token dies.
+             *
+             * This server issues NO refresh token (verified: a login returns
+             * only access_token/id_token, `offline_access` is refused) and the
+             * access token lasts ~25 minutes, so the only way for the car to
+             * work with the phone app closed is to repeat the same headless
+             * username/password login the phone does. The credentials are the
+             * ones already saved on this device for automatic re-login; the
+             * file lives in app-private storage and is outside cloud backup.
+             */
+            auth: credentials
+              ? {
+                  authIssuer: config.authIssuer,
+                  clientId: config.oidc.web.clientId,
+                  redirectUri: config.oidc.web.redirectUri,
+                  scope: config.oidc.web.scopes.join(' '),
+                  username: credentials.username,
+                  password: credentials.password,
+                  helpdesccode: credentials.helpdesccode ?? '',
+                }
+              : null,
             unitId: activeUnitId ?? null,
             year,
             districts: districtList.map((d) => ({ id: d.id, label: d.label })),
@@ -142,6 +175,7 @@ export function usePublishCarMap(input: {
     unitName,
     enabled,
     token,
+    credentials,
     activeUnitId,
     year,
     districtList,

@@ -28,9 +28,7 @@ object CarApi {
         val unitId: String,
         val year: Int,
         val districts: List<Pair<String, String>>, // id to label
-        val refreshToken: String? = null,
-        val clientId: String? = null,
-        val tokenEndpoint: String? = null,
+        val credentials: CarAuth.Credentials? = null,
     )
 
     /**
@@ -69,11 +67,17 @@ object CarApi {
             unitId = unitId,
             year = year,
             districts = districts,
-            refreshToken = root.optString("refreshToken")
-                .takeIf { it.isNotBlank() && it != "null" },
-            clientId = root.optString("clientId").takeIf { it.isNotBlank() && it != "null" },
-            tokenEndpoint = root.optString("tokenEndpoint")
-                .takeIf { it.isNotBlank() && it != "null" },
+            credentials = root.optJSONObject("auth")?.let { a ->
+                CarAuth.Credentials(
+                    authIssuer = a.optString("authIssuer"),
+                    clientId = a.optString("clientId"),
+                    redirectUri = a.optString("redirectUri"),
+                    scope = a.optString("scope"),
+                    username = a.optString("username"),
+                    password = a.optString("password"),
+                    helpdesccode = a.optString("helpdesccode"),
+                ).takeIf { it.username.isNotBlank() && it.password.isNotBlank() }
+            },
         )
     }
 
@@ -113,11 +117,12 @@ object CarApi {
                 val body = try {
                     get(url, access.token)
                 } catch (e: Unauthorized) {
-                    // The published token has aged out. Renew it here rather
-                    // than telling the driver to pick up their phone.
-                    val fresh = refresh(context, access)
+                    // The token has aged out (they last ~25 minutes). Sign in
+                    // again here rather than telling a driver to pick up their
+                    // phone.
+                    val fresh = signIn(context, access)
                         ?: throw IllegalStateException(
-                            "Sesja wygasła — otwórz aplikację na telefonie",
+                            "Sesja wygasła — zaloguj się w aplikacji na telefonie",
                         )
                     get(url, fresh)
                 }
@@ -137,36 +142,17 @@ object CarApi {
 
     private class Unauthorized : Exception("401")
 
-    /** Swap the refresh token for a new access token (OAuth2 refresh grant). */
-    private fun refresh(context: Context, access: Access): String? {
-        val refreshToken = access.refreshToken ?: return null
-        val endpoint = access.tokenEndpoint ?: return null
-        val clientId = access.clientId ?: return null
-        return try {
-            val conn = URL(endpoint).openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-            conn.connectTimeout = 10000
-            conn.readTimeout = 15000
-            val body = "grant_type=refresh_token" +
-                "&refresh_token=" + java.net.URLEncoder.encode(refreshToken, "UTF-8") +
-                "&client_id=" + java.net.URLEncoder.encode(clientId, "UTF-8")
-            conn.outputStream.use { it.write(body.toByteArray()) }
-            if (conn.responseCode !in 200..299) {
-                Log.w(TAG, "refresh rejected: ${conn.responseCode}")
-                return null
-            }
-            val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
-            val token = json.optString("access_token").takeIf { it.isNotBlank() } ?: return null
-            renewed = token
-            writeRenewed(context, token)
-            Log.i(TAG, "session renewed by the car app")
-            token
-        } catch (e: Exception) {
-            Log.w(TAG, "refresh failed", e)
-            null
-        }
+    /**
+     * Sign in with the credentials the phone published. Serialised so a burst
+     * of 401s cannot start several logins at once.
+     */
+    @Synchronized
+    private fun signIn(context: Context, access: Access): String? {
+        val creds = access.credentials ?: return null
+        val token = CarAuth.login(creds) ?: return null
+        renewed = token
+        writeRenewed(context, token)
+        return token
     }
 
     private fun readRenewed(context: Context): String? = try {

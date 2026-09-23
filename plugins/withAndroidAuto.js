@@ -133,17 +133,20 @@ function withCarManifest(config) {
       });
     }
 
-    // Dev harness: reachable only by explicit component name (no intent filter,
-    // so it never shows up in the launcher).
-    app.activity = app.activity ?? [];
-    if (!app.activity.some((a) => a.$['android:name'] === PREVIEW_ACTIVITY)) {
-      app.activity.push({
-        $: {
-          'android:name': PREVIEW_ACTIVITY,
-          'android:exported': 'true',
-          'android:label': 'Car map preview',
-        },
-      });
+    // Dev harness: declared only when explicitly asked for, so it never ships.
+    // Build with CAR_DEV_PREVIEW=1 to get it:
+    //   adb shell am start -n <pkg>/.car.CarMapPreviewActivity --ei w 800 --ei h 400
+    if (process.env.CAR_DEV_PREVIEW === '1') {
+      app.activity = app.activity ?? [];
+      if (!app.activity.some((a) => a.$['android:name'] === PREVIEW_ACTIVITY)) {
+        app.activity.push({
+          $: {
+            'android:name': PREVIEW_ACTIVITY,
+            'android:exported': 'true',
+            'android:label': 'Car map preview',
+          },
+        });
+      }
     }
 
     return cfg;

@@ -3,6 +3,13 @@ import { Platform } from 'react-native';
 import { File, Paths } from 'expo-file-system';
 import { buildMapStyle, type VectorOverlay } from '@/map/style';
 import type { OccupiedRewir } from '@/features/map/occupied';
+import { useAuth } from '@/auth/AuthProvider';
+import { useUnits } from '@/units/UnitProvider';
+import { config } from '@/config';
+import {
+  useHuntingDistrictOptions,
+  useHuntingYears,
+} from '@/features/huntingBook/lookups';
 
 /**
  * Hands the map over to the ANDROID AUTO car app.
@@ -56,6 +63,20 @@ export function usePublishCarMap(input: {
 
   const { activeRasterKeys, vectorOverlays, markers, camera, unitName, enabled } = input;
 
+  // What the car needs to talk to the API on its own — it must keep working
+  // with the phone app closed, so it cannot depend on data the phone happens to
+  // have cached. The token is written to the app's PRIVATE files directory
+  // (same place the car reads the map from); it is excluded from backups by the
+  // Android Auto config plugin.
+  const { tokens } = useAuth();
+  const { activeUnitId } = useUnits();
+  const years = useHuntingYears();
+  const districts = useHuntingDistrictOptions(activeUnitId ?? '');
+  const year =
+    years.data?.find((y) => y.isActual)?.value ?? years.data?.[0]?.value ?? null;
+  const token = tokens?.accessToken ?? null;
+  const districtList = districts.data ?? [];
+
   useEffect(() => {
     // Only Android has a car app; the web build has no file system to speak of.
     if (Platform.OS !== 'android' || !enabled) return;
@@ -64,6 +85,13 @@ export function usePublishCarMap(input: {
       try {
         const payload = JSON.stringify({
           unit: unitName ?? null,
+          api: {
+            baseUrl: config.apiBaseUrl,
+            token,
+            unitId: activeUnitId ?? null,
+            year,
+            districts: districtList.map((d) => ({ id: d.id, label: d.label })),
+          },
           style: buildMapStyle(activeRasterKeys, vectorOverlays),
           camera: camera
             ? { lng: camera.longitude, lat: camera.latitude, zoom: camera.zoom }
@@ -100,5 +128,16 @@ export function usePublishCarMap(input: {
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [activeRasterKeys, vectorOverlays, markers, camera, unitName, enabled]);
+  }, [
+    activeRasterKeys,
+    vectorOverlays,
+    markers,
+    camera,
+    unitName,
+    enabled,
+    token,
+    activeUnitId,
+    year,
+    districtList,
+  ]);
 }

@@ -11,7 +11,11 @@ import android.graphics.RectF
  * (`CarMapPreviewActivity`) draw exactly what the car draws, and the layout can
  * be checked at 800x400 without a car.
  */
+/** Which of the app's tabs the car screen is showing. */
+enum class CarTab { MAP, BOOK }
+
 class CarMapChrome(
+    private val context: android.content.Context,
     private val renderer: CarMapRenderer,
     private val onRefresh: () -> Unit,
     private val onLocate: (() -> Unit)? = null,
@@ -19,6 +23,8 @@ class CarMapChrome(
     private val showRefresh: Boolean = false,
 ) {
     private val ui = CarUi()
+    private val book = CarBookView(context, ui) { renderer.redraw() }
+    private var tab = CarTab.MAP
 
     var data: CarMapData = CarMapStore.fallback()
     private var selected: CarMarker? = null
@@ -31,9 +37,21 @@ class CarMapChrome(
         layersOpen = false
     }
 
+    fun tab(): CarTab = tab
+
+    fun reloadBook() = book.reload()
+
+    /** Drag on the book tab scrolls the list instead of panning the map. */
+    fun onScroll(dy: Float): Boolean {
+        if (tab != CarTab.BOOK) return false
+        book.onScroll(dy)
+        return true
+    }
+
     /** True when the tap was consumed; the caller should repaint either way. */
     fun tap(x: Float, y: Float): Boolean {
         if (ui.tap(x, y)) return true
+        if (tab == CarTab.BOOK) return book.blocking()
         if (layersOpen) {
             layersOpen = false
             return true
@@ -59,12 +77,20 @@ class CarMapChrome(
         return selected != null || selectedDevice != null
     }
 
-    fun blockingGesture(): Boolean = layersOpen
+    fun blockingGesture(): Boolean =
+        layersOpen || tab == CarTab.BOOK || book.blocking()
 
     fun draw(canvas: Canvas, width: Int, height: Int) {
         ui.begin(width, height)
         val w = width.toFloat()
-        val h = height.toFloat()
+        // Everything sits above the tab bar, which is drawn last so its taps win.
+        val h = height - ui.dp(34f)
+
+        if (tab == CarTab.BOOK) {
+            book.draw(canvas, width, height, h)
+            drawTabs(canvas, width, height)
+            return
+        }
 
         // In the car the app bar carries no buttons: the host paints its own
         // action strip over the top-right of this surface and anything drawn
@@ -92,6 +118,18 @@ class CarMapChrome(
         selected?.let { drawHunterCard(canvas, w, h, it) }
         selectedDevice?.let { drawDeviceCard(canvas, w, h, it) }
         if (layersOpen) drawLayersPanel(canvas, w, h, barBottom)
+        drawTabs(canvas, width, height)
+    }
+
+    private fun drawTabs(canvas: Canvas, width: Int, height: Int) {
+        ui.tabBar(canvas, width, height, listOf("Mapa", "Polowania"), tab.ordinal) { index ->
+            tab = if (index == 0) CarTab.MAP else CarTab.BOOK
+            layersOpen = false
+            selected = null
+            selectedDevice = null
+            renderer.setHighlight(null)
+            if (tab == CarTab.BOOK) book.activate()
+        }
     }
 
     /** Koło name plus how old the phone's data is — the phone shows the unit

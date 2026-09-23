@@ -34,6 +34,12 @@ private class Hotspot(val rect: RectF, val onTap: () -> Unit)
 
 class CarUi {
 
+    companion object {
+        /** The phone's "po czasie" card background. */
+        val OVERDUE_CARD = android.graphics.Color.rgb(0xFF, 0xB3, 0xAB)
+    }
+
+
     private val hotspots = mutableListOf<Hotspot>()
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -241,6 +247,70 @@ class CarUi {
         fill.color = color
         canvas.drawCircle(x + dp(4f), y - dp(4f), dp(4f), fill)
         label(canvas, clip(label, dp(11f), dp(96f)), x + dp(13f), y, dp(11f))
+    }
+
+    /** Outlined chip, as the book screen's obwód selector on the phone. */
+    fun chip(canvas: Canvas, rect: RectF, text: String, onTap: () -> Unit) {
+        stroke.color = CarTheme.green
+        stroke.strokeWidth = dp(1.2f)
+        canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, stroke)
+        label(
+            canvas,
+            clip(text, dp(12f), rect.width() - dp(16f)),
+            rect.centerX(),
+            rect.centerY() + dp(4f),
+            dp(12f),
+            CarTheme.green,
+            align = Paint.Align.CENTER,
+        )
+        hotspot(RectF(rect), onTap)
+    }
+
+    /** Bottom tab bar — the phone's Mapa / Polowania tabs. */
+    fun tabBar(
+        canvas: Canvas,
+        width: Int,
+        height: Int,
+        tabs: List<String>,
+        activeIndex: Int,
+        onSelect: (Int) -> Unit,
+    ): Float {
+        val h = dp(34f)
+        val top = height - h
+        fill.color = CarTheme.surface
+        canvas.drawRect(0f, top, width.toFloat(), height.toFloat(), fill)
+        fill.color = Color.argb(0x18, 0, 0, 0)
+        canvas.drawRect(0f, top, width.toFloat(), top + dp(1f), fill)
+
+        val w = width.toFloat() / tabs.size
+        for ((i, name) in tabs.withIndex()) {
+            val active = i == activeIndex
+            label(
+                canvas,
+                name,
+                w * i + w / 2,
+                top + h * 0.64f,
+                dp(13f),
+                if (active) CarTheme.green else CarTheme.muted,
+                bold = active,
+                align = Paint.Align.CENTER,
+            )
+            if (active) {
+                fill.color = CarTheme.green
+                canvas.drawRoundRect(
+                    RectF(w * i + w * 0.28f, top + dp(3f), w * i + w * 0.72f, top + dp(5f)),
+                    dp(1f), dp(1f), fill,
+                )
+            }
+            hotspot(RectF(w * i, top, w * (i + 1), height.toFloat())) { onSelect(i) }
+        }
+        return top
+    }
+
+    /** Fills the whole surface, so a non-map screen hides the map underneath. */
+    fun page(canvas: Canvas, width: Int, height: Int) {
+        fill.color = CarTheme.background
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), fill)
     }
 
     fun scrim(canvas: Canvas, width: Int, height: Int, onTap: () -> Unit) {

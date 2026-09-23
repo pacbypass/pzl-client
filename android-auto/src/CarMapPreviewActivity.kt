@@ -42,6 +42,7 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
         renderer = CarMapRenderer(this)
         location = CarLocation(this)
         chrome = CarMapChrome(
+            this,
             renderer,
             onRefresh = { reload() },
             onLocate = { location.current?.let { renderer.setCamera(it, 14.0) } },
@@ -124,8 +125,11 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
                 if (Math.hypot((event.x - downX).toDouble(), (event.y - downY).toDouble()) > 12) {
                     dragged = true
                 }
-                if (!chrome.blockingGesture() && dragged) {
-                    renderer.onDrag(event.x - lastX, event.y - lastY)
+                if (dragged) {
+                    // Book tab scrolls; map tab pans.
+                    if (!chrome.onScroll(lastY - event.y) && !chrome.blockingGesture()) {
+                        renderer.onDrag(event.x - lastX, event.y - lastY)
+                    }
                 }
                 lastX = event.x
                 lastY = event.y

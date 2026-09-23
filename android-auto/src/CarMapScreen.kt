@@ -28,8 +28,9 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     private val renderer = CarMapRenderer(carContext)
     private val location = CarLocation(carContext)
     private val chrome = CarMapChrome(
+        carContext,
         renderer,
-        onRefresh = { load() },
+        onRefresh = { refresh() },
         onLocate = { centreOnMe() },
     )
     private var data: CarMapData = CarMapStore.fallback()
@@ -100,8 +101,15 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     // ---- gestures --------------------------------------------------------
 
     override fun onScroll(distanceX: Float, distanceY: Float) {
+        // On the book tab the same gesture scrolls the list.
+        if (chrome.onScroll(distanceY)) return
         if (chrome.blockingGesture()) return
         renderer.onDrag(-distanceX, -distanceY)
+    }
+
+    /** Refresh reloads whichever tab is in front. */
+    private fun refresh() {
+        if (chrome.tab() == CarTab.BOOK) chrome.reloadBook() else load()
     }
 
     override fun onScale(focusX: Float, focusY: Float, scaleFactor: Float) {
@@ -123,7 +131,7 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
             .addAction(
                 Action.Builder()
                     .setTitle("Odśwież")
-                    .setOnClickListener { load() }
+                    .setOnClickListener { refresh() }
                     .build(),
             )
             .addAction(

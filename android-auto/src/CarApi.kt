@@ -81,6 +81,20 @@ object CarApi {
         )
     }
 
+    /** Dev harness only: prove the car can sign in on its own, without waiting
+     *  ~25 minutes for the published token to expire. */
+    fun signInNow(context: Context, onResult: (String?) -> Unit) {
+        val access = access(context)
+        if (access == null) {
+            onResult(null)
+            return
+        }
+        io.execute {
+            val token = signIn(context, access)
+            main { onResult(token) }
+        }
+    }
+
     /** One entry of the książka ewidencji, as the phone's list shows it. */
     data class Entry(
         val id: String,

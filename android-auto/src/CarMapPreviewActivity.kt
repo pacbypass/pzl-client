@@ -58,6 +58,17 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
         // window, so those would not line up with what the renderer drew. The
         // car host hands us surface-relative coordinates, and so does this.
         view.setOnTouchListener { _, event -> handleTouch(event) }
+        if (intent.getBooleanExtra("relogin", false)) {
+            // --ez relogin true: exercise the car's own sign-in against the
+            // live server, instead of waiting for the token to age out.
+            CarApi.signInNow(this) { token ->
+                android.util.Log.i(
+                    "CarMapPreview",
+                    if (token != null) "car sign-in OK (token ${token.length} chars)"
+                    else "car sign-in FAILED",
+                )
+            }
+        }
         val w = intent.getIntExtra("w", 0)
         val h = intent.getIntExtra("h", 0)
         if (w > 0 && h > 0) {

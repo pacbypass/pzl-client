@@ -88,6 +88,12 @@ export function usePublishCarMap(input: {
           api: {
             baseUrl: config.apiBaseUrl,
             token,
+            // So the car can renew the session itself: an access token outlives
+            // neither a long drive nor a week of not opening the phone app.
+            refreshToken: tokens?.refreshToken ?? null,
+            clientId: tokens?.clientId ?? config.oidc.web.clientId,
+            tokenEndpoint: config.oidc.tokenEndpoint,
+            expiresAt: tokens?.expiresAt ?? null,
             unitId: activeUnitId ?? null,
             year,
             districts: districtList.map((d) => ({ id: d.id, label: d.label })),

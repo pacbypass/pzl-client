@@ -28,7 +28,18 @@ object CarApi {
         val unitId: String,
         val year: Int,
         val districts: List<Pair<String, String>>, // id to label
+        val refreshToken: String? = null,
+        val clientId: String? = null,
+        val tokenEndpoint: String? = null,
     )
+
+    /**
+     * A token the car renewed itself, kept for the rest of the process and in
+     * the app's private files (NOT SharedPreferences, which this app includes
+     * in cloud backup).
+     */
+    private var renewed: String? = null
+    private const val RENEWED_FILE = "car-token.txt"
 
     fun access(context: Context): Access? {
         val root = try {
@@ -53,10 +64,16 @@ object CarApi {
         }
         return Access(
             baseUrl = root.optString("baseUrl").ifBlank { "https://api.systemkl2.pzlow.pl" },
-            token = token,
+            // A token this session renewed wins over the phone's published one.
+            token = renewed ?: readRenewed(context) ?: token,
             unitId = unitId,
             year = year,
             districts = districts,
+            refreshToken = root.optString("refreshToken")
+                .takeIf { it.isNotBlank() && it != "null" },
+            clientId = root.optString("clientId").takeIf { it.isNotBlank() && it != "null" },
+            tokenEndpoint = root.optString("tokenEndpoint")
+                .takeIf { it.isNotBlank() && it != "null" },
         )
     }
 
@@ -93,7 +110,17 @@ object CarApi {
             try {
                 val url = "${access.baseUrl}/units/${access.unitId}/hunting-districts/" +
                     "$districtId/huntings?year=${access.year}&page=$page"
-                val body = get(url, access.token)
+                val body = try {
+                    get(url, access.token)
+                } catch (e: Unauthorized) {
+                    // The published token has aged out. Renew it here rather
+                    // than telling the driver to pick up their phone.
+                    val fresh = refresh(context, access)
+                        ?: throw IllegalStateException(
+                            "Sesja wygasła — otwórz aplikację na telefonie",
+                        )
+                    get(url, fresh)
+                }
                 val root = JSONObject(body)
                 val arr = root.optJSONArray("result") ?: JSONArray()
                 val total = root.optInt("total", arr.length())
@@ -108,6 +135,55 @@ object CarApi {
         }
     }
 
+    private class Unauthorized : Exception("401")
+
+    /** Swap the refresh token for a new access token (OAuth2 refresh grant). */
+    private fun refresh(context: Context, access: Access): String? {
+        val refreshToken = access.refreshToken ?: return null
+        val endpoint = access.tokenEndpoint ?: return null
+        val clientId = access.clientId ?: return null
+        return try {
+            val conn = URL(endpoint).openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            conn.connectTimeout = 10000
+            conn.readTimeout = 15000
+            val body = "grant_type=refresh_token" +
+                "&refresh_token=" + java.net.URLEncoder.encode(refreshToken, "UTF-8") +
+                "&client_id=" + java.net.URLEncoder.encode(clientId, "UTF-8")
+            conn.outputStream.use { it.write(body.toByteArray()) }
+            if (conn.responseCode !in 200..299) {
+                Log.w(TAG, "refresh rejected: ${conn.responseCode}")
+                return null
+            }
+            val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+            val token = json.optString("access_token").takeIf { it.isNotBlank() } ?: return null
+            renewed = token
+            writeRenewed(context, token)
+            Log.i(TAG, "session renewed by the car app")
+            token
+        } catch (e: Exception) {
+            Log.w(TAG, "refresh failed", e)
+            null
+        }
+    }
+
+    private fun readRenewed(context: Context): String? = try {
+        java.io.File(context.filesDir, RENEWED_FILE).takeIf { it.exists() }?.readText()
+            ?.trim()?.takeIf { it.isNotEmpty() }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun writeRenewed(context: Context, token: String) {
+        try {
+            java.io.File(context.filesDir, RENEWED_FILE).writeText(token)
+        } catch (e: Exception) {
+            Log.w(TAG, "could not store renewed token", e)
+        }
+    }
+
     private fun get(url: String, token: String): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = "GET"
@@ -117,12 +193,10 @@ object CarApi {
         conn.readTimeout = 15000
         try {
             val code = conn.responseCode
+            if (code == 401) throw Unauthorized()
             if (code !in 200..299) {
                 val err = conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                throw IllegalStateException(
-                    if (code == 401) "Sesja wygasła — otwórz aplikację na telefonie"
-                    else "HTTP $code ${err.take(120)}",
-                )
+                throw IllegalStateException("HTTP $code ${err.take(120)}")
             }
             return conn.inputStream.bufferedReader().use { it.readText() }
         } finally {

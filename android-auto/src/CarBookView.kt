@@ -236,9 +236,12 @@ class CarBookView(
         }
         val list = districts()
         val rowH = ui.dp(30f)
+        // Height must follow where the rows actually start (top + 28) or the
+        // last obwód falls outside the card and never gets drawn.
+        val cardTop = top + ui.dp(8f)
         val rect = RectF(
-            w * 0.22f, top + ui.dp(8f), w * 0.78f,
-            (top + ui.dp(30f) + list.size * rowH).coerceAtMost(h - ui.dp(10f)),
+            w * 0.22f, cardTop, w * 0.78f,
+            (cardTop + ui.dp(30f) + list.size * rowH + ui.dp(6f)).coerceAtMost(h - ui.dp(10f)),
         )
         ui.card(canvas, rect, CarTheme.surface)
         ui.label(

@@ -69,6 +69,20 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
                 )
             }
         }
+        if (intent.getBooleanExtra("zoomtest", false)) {
+            // adb cannot inject a two-finger pinch, so drive the same code the
+            // host's onScale calls: a burst of scale steps, then silence.
+            val handler = android.os.Handler(android.os.Looper.getMainLooper())
+            for (i in 1..10) {
+                handler.postDelayed({
+                    renderer.onZoomAt(400f, 240f, if (i <= 5) 1.12f else 0.94f)
+                    android.util.Log.i("CarMapPreview", "pinch step $i")
+                }, 3000L + i * 70L)
+            }
+            handler.postDelayed({
+                android.util.Log.i("CarMapPreview", "pinch settled at zoom ${renderer.camera().zoom}")
+            }, 4500L)
+        }
         val w = intent.getIntExtra("w", 0)
         val h = intent.getIntExtra("h", 0)
         if (w > 0 && h > 0) {

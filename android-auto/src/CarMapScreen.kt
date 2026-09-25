@@ -48,6 +48,11 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(this)
         location.onUpdate = {
             renderer.setUserLocation(location.current)
+            renderer.setUserAccuracy(
+                location.accuracy,
+                System.currentTimeMillis() - location.fixedAt > STALE_FIX_MS,
+            )
+            updateWhereAmI()
         }
         location.start()
     }
@@ -55,6 +60,35 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     override fun onDestroy(owner: LifecycleOwner) {
         location.stop()
         renderer.detach()
+    }
+
+    /** "Rewir 13 C · Obwód 185", or a warning when the fix falls outside them. */
+    private fun updateWhereAmI() {
+        val at = location.current
+        if (at == null) {
+            chrome.whereAmI = null
+            return
+        }
+        val stale = System.currentTimeMillis() - location.fixedAt > STALE_FIX_MS
+        val rewir = CarMapStore.rewirAt(data, at.longitude, at.latitude)
+        val accuracy = location.accuracy.toInt()
+        chrome.whereAmI = when {
+            stale -> CarWhereAmI("Lokalizacja nieaktualna", true)
+            rewir == null -> CarWhereAmI("Poza rewirami koła · ±${accuracy}m", true)
+            else -> {
+                val district = data.let { d ->
+                    CarApi.access(carContext)?.districts
+                        ?.firstOrNull { it.first == rewir.districtId }?.second
+                }
+                val where = listOfNotNull(
+                    "Rewir ${rewir.name}",
+                    district?.let { "Obwód $it" },
+                    "±${accuracy}m",
+                ).joinToString(" · ")
+                CarWhereAmI(where, false)
+            }
+        }
+        renderer.redraw()
     }
 
     /** The crosshair button: go to the driver, like the phone's locate FAB. */
@@ -173,5 +207,7 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
 
     private companion object {
         const val TAG = "CarMapScreen"
+        /** Past this, a fix is shown as stale rather than trusted. */
+        const val STALE_FIX_MS = 30_000L
     }
 }

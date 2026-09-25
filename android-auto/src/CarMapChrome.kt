@@ -14,6 +14,9 @@ import android.graphics.RectF
 /** Which of the app's tabs the car screen is showing. */
 enum class CarTab { MAP, BOOK }
 
+/** Where the driver is, in the koło's own terms. */
+data class CarWhereAmI(val text: String, val warn: Boolean)
+
 class CarMapChrome(
     private val context: android.content.Context,
     private val renderer: CarMapRenderer,
@@ -29,6 +32,13 @@ class CarMapChrome(
     /** Called when the tab changes, so the host's action strip can be rebuilt
      *  — its actions differ per tab. */
     var onTabChanged: (() -> Unit)? = null
+
+    /**
+     * Which rewir the driver is standing in, recomputed as fixes arrive. The
+     * point of the car screen is knowing you are where you are allowed to be,
+     * so this is stated outright instead of left to be read off the map.
+     */
+    var whereAmI: CarWhereAmI? = null
 
     var data: CarMapData = CarMapStore.fallback()
     private var selected: CarMarker? = null
@@ -121,6 +131,16 @@ class CarMapChrome(
         if (!layersOpen && selected == null && selectedDevice == null) {
             drawLegend(canvas, h)
             ui.label(canvas, subtitle(), ui.dp(10f), h - ui.dp(4f), ui.dp(11f), CarTheme.muted)
+        }
+        // Position readout sits top-left, where nothing else competes for it.
+        whereAmI?.let { where ->
+            val text = ui.clip(where.text, ui.dp(13f), w * 0.62f, bold = true)
+            val box = RectF(ui.dp(8f), ui.dp(6f), ui.dp(16f) + w * 0.62f, ui.dp(34f))
+            ui.card(canvas, box, if (where.warn) CarUi.OVERDUE_CARD else CarTheme.surface, ui.dp(8f))
+            ui.label(
+                canvas, text, box.left + ui.dp(10f), box.centerY() + ui.dp(5f), ui.dp(13f),
+                if (where.warn) CarTheme.occupied else CarTheme.onSurface, bold = true,
+            )
         }
         selected?.let { drawHunterCard(canvas, w, h, it) }
         selectedDevice?.let { drawDeviceCard(canvas, w, h, it) }

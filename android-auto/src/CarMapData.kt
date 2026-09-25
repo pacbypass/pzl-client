@@ -28,6 +28,8 @@ data class CarMapData(
     val devices: List<CarDevice> = emptyList(),
     /** Outlines of the taken rewiry, so a tap anywhere inside one works. */
     val occupiedShapes: List<CarShape> = emptyList(),
+    /** Every rewir of the koło, not only the taken ones. */
+    val rewirs: List<CarRewir> = emptyList(),
 )
 
 /** An ambona / zwyżka / paśnik …, as the phone's device card shows it. */
@@ -37,6 +39,13 @@ data class CarDevice(
     val number: String?,
     val color: Int,
     val position: LatLng,
+)
+
+/** A rewir outline with its name, for "which rewir am I in". */
+data class CarRewir(
+    val name: String,
+    val districtId: String,
+    val rings: List<List<DoubleArray>>,
 )
 
 /** A polygon that belongs to a marker, for tap-anywhere hit testing. */
@@ -92,6 +101,7 @@ object CarMapStore {
             unit = root.optString("unit").takeIf { it.isNotBlank() && it != "null" },
             devices = devicesFrom(style),
             occupiedShapes = shapesFrom(style, markers),
+            rewirs = rewirsFrom(style),
         )
     }
 
@@ -154,6 +164,68 @@ object CarMapStore {
             if (rings.isNotEmpty()) out.add(CarShape(marker.id, rings))
         }
         return out
+    }
+
+    /** Outlines of every rewir the phone published (source `geo-rewirs`). */
+    private fun rewirsFrom(style: JSONObject): List<CarRewir> {
+        val out = mutableListOf<CarRewir>()
+        val fc = style.optJSONObject("sources")?.optJSONObject("geo-rewirs")
+            ?.optJSONObject("data") ?: return out
+        val features = fc.optJSONArray("features") ?: return out
+        for (i in 0 until features.length()) {
+            val f = features.optJSONObject(i) ?: continue
+            val props = f.optJSONObject("properties") ?: continue
+            val rings = ringsOf(f.optJSONObject("geometry"))
+            if (rings.isNotEmpty()) {
+                out.add(
+                    CarRewir(
+                        name = props.optString("name"),
+                        districtId = props.optString("districtId"),
+                        rings = rings,
+                    ),
+                )
+            }
+        }
+        return out
+    }
+
+    private fun ringsOf(geometry: JSONObject?): List<List<DoubleArray>> {
+        val rings = mutableListOf<List<DoubleArray>>()
+        if (geometry == null) return rings
+        when (geometry.optString("type")) {
+            "Polygon" -> geometry.optJSONArray("coordinates")?.let { polygon ->
+                for (r in 0 until polygon.length()) ring(polygon.optJSONArray(r))?.let(rings::add)
+            }
+            "MultiPolygon" -> geometry.optJSONArray("coordinates")?.let { multi ->
+                for (p in 0 until multi.length()) {
+                    val polygon = multi.optJSONArray(p) ?: continue
+                    for (r in 0 until polygon.length()) ring(polygon.optJSONArray(r))?.let(rings::add)
+                }
+            }
+        }
+        return rings
+    }
+
+    /** Which rewir contains this point, if any. */
+    fun rewirAt(data: CarMapData, lng: Double, lat: Double): CarRewir? =
+        data.rewirs.firstOrNull { rewir ->
+            rewir.rings.any { ring -> inside(ring, lng, lat) }
+        }
+
+    private fun inside(ring: List<DoubleArray>, lng: Double, lat: Double): Boolean {
+        var result = false
+        var j = ring.size - 1
+        for (i in ring.indices) {
+            val xi = ring[i][0]; val yi = ring[i][1]
+            val xj = ring[j][0]; val yj = ring[j][1]
+            if ((yi > lat) != (yj > lat) &&
+                lng < (xj - xi) * (lat - yi) / ((yj - yi).takeIf { it != 0.0 } ?: 1e-12) + xi
+            ) {
+                result = !result
+            }
+            j = i
+        }
+        return result
     }
 
     private fun ring(arr: JSONArray?): List<DoubleArray>? {

@@ -207,6 +207,18 @@ class CarMapRenderer(private val context: Context) {
         requestSnapshot()
     }
 
+    /** Metres of uncertainty on the current fix; drawn as a ring. */
+    private var userAccuracy = 0f
+    /** True when the fix is old enough that it should not be trusted. */
+    private var userStale = false
+
+    fun setUserAccuracy(metres: Float, stale: Boolean) {
+        if (metres == userAccuracy && stale == userStale) return
+        userAccuracy = metres
+        userStale = stale
+        redrawLastFrame()
+    }
+
     fun setUserLocation(location: LatLng?) {
         val previous = userLocation
         userLocation = location
@@ -620,7 +632,25 @@ class CarMapRenderer(private val context: Context) {
             val p = snapshot.pixelForLatLng(it)
             val x = p.x + offsetX - marginX()
             val y = p.y + offsetY - marginY()
-            markerPaint.color = Color.rgb(0x15, 0x65, 0xC0)
+            // Accuracy ring: a ±40m fix next to a rewir boundary should LOOK
+            // like one, rather than a confident dot on the wrong side of it.
+            if (userAccuracy > 1f) {
+                val north = snapshot.pixelForLatLng(
+                    LatLng(it.latitude + userAccuracy / 111_320.0, it.longitude),
+                )
+                val radius = Math.abs(p.y - north.y)
+                if (radius > 2f) {
+                    markerPaint.color = Color.argb(40, 0x15, 0x65, 0xC0)
+                    canvas.drawCircle(x, y, radius, markerPaint)
+                    strokePaint.color = Color.argb(90, 0x15, 0x65, 0xC0)
+                    strokePaint.strokeWidth = 2f
+                    canvas.drawCircle(x, y, radius, strokePaint)
+                    strokePaint.color = Color.WHITE
+                    strokePaint.strokeWidth = 4f
+                }
+            }
+            markerPaint.color =
+                if (userStale) Color.rgb(0x90, 0x9C, 0xA6) else Color.rgb(0x15, 0x65, 0xC0)
             canvas.drawCircle(x, y, 12f, markerPaint)
             canvas.drawCircle(x, y, 12f, strokePaint)
         }

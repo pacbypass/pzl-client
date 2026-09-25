@@ -23,6 +23,12 @@ class CarLocation(private val context: Context) : LocationListener {
     private var lastFix: Location? = null
     var current: LatLng? = null
         private set
+    /** Metres of uncertainty on the current fix, for the accuracy ring. */
+    var accuracy: Float = 0f
+        private set
+    /** When that fix arrived, so a stale dot can be shown as stale. */
+    var fixedAt: Long = 0L
+        private set
     var onUpdate: (() -> Unit)? = null
 
     private fun allowed(): Boolean =
@@ -43,7 +49,22 @@ class CarLocation(private val context: Context) : LocationListener {
                 // Seed from the last known fix so the puck appears at once,
                 // then follow.
                 lm.getLastKnownLocation(provider)?.let { accept(it) }
-                lm.requestLocationUpdates(provider, 2000L, 3f, this, Looper.getMainLooper())
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    // Ask for the best the device can do. The legacy call takes
+                    // whatever a provider felt like producing, which is why a
+                    // deliberate "locate" felt accurate and the puck did not.
+                    lm.requestLocationUpdates(
+                        provider,
+                        android.location.LocationRequest.Builder(1000L)
+                            .setQuality(android.location.LocationRequest.QUALITY_HIGH_ACCURACY)
+                            .setMinUpdateDistanceMeters(0f)
+                            .build(),
+                        context.mainExecutor,
+                        this,
+                    )
+                } else {
+                    lm.requestLocationUpdates(provider, 1000L, 0f, this, Looper.getMainLooper())
+                }
                 Log.i(TAG, "following '$provider'")
             } catch (e: Throwable) {
                 Log.w(TAG, "provider $provider unavailable: ${e.message}")
@@ -86,6 +107,8 @@ class CarLocation(private val context: Context) : LocationListener {
         val previous = lastFix
         if (previous != null && location.elapsedRealtimeNanos < previous.elapsedRealtimeNanos) return
         lastFix = location
+        accuracy = location.accuracy
+        fixedAt = System.currentTimeMillis()
         val next = LatLng(location.latitude, location.longitude)
         if (current?.let { it.latitude == next.latitude && it.longitude == next.longitude } == true) return
         current = next

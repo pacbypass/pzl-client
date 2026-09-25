@@ -35,6 +35,7 @@ private class Hotspot(val rect: RectF, val onTap: () -> Unit)
 class CarUi {
 
     companion object {
+        private const val TEXT_BOOST = 1.45f
         /** The phone's "po czasie" card background. */
         val OVERDUE_CARD = android.graphics.Color.rgb(0xFF, 0xB3, 0xAB)
         /** "Na polowaniu" — the phone's primaryContainer, deepened so it reads
@@ -56,6 +57,13 @@ class CarUi {
      *  phone screen both end up proportionate. */
     var scale = 1f
         private set
+
+    /**
+     * Text is drawn larger than the phone's proportions would give. A car
+     * screen is read at arm's length, in daylight, by someone who should be
+     * looking at the road — phone-sized type is unreadable there.
+     */
+    private fun textSize(size: Float) = size * TEXT_BOOST
 
     fun begin(width: Int, height: Int) {
         hotspots.clear()
@@ -105,7 +113,7 @@ class CarUi {
         align: Paint.Align = Paint.Align.LEFT,
     ) {
         text.color = color
-        text.textSize = size
+        text.textSize = textSize(size)
         text.textAlign = align
         text.typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         canvas.drawText(value, x, y, text)
@@ -113,7 +121,8 @@ class CarUi {
 
     /** Trims with an ellipsis so long hunter names cannot overrun a card. */
     fun clip(value: String, size: Float, maxWidth: Float, bold: Boolean = false): String {
-        text.textSize = size
+        // Measure at the size it will actually be drawn.
+        text.textSize = textSize(size)
         text.typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         if (text.measureText(value) <= maxWidth) return value
         var end = value.length
@@ -281,7 +290,7 @@ class CarUi {
         activeIndex: Int,
         onSelect: (Int) -> Unit,
     ): Float {
-        val h = dp(34f)
+        val h = dp(42f)
         val top = height - h
         fill.color = CarTheme.surface
         canvas.drawRect(0f, top, width.toFloat(), height.toFloat(), fill)

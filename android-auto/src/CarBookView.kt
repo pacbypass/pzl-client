@@ -123,7 +123,7 @@ class CarBookView(
         // No app bar: on a 400px screen a title strip costs a whole entry. The
         // obwód chip doubles as the header, with the counts beside it.
         val barBottom = 0f
-        val chip = RectF(ui.dp(8f), ui.dp(5f), ui.dp(112f), ui.dp(27f))
+        val chip = RectF(ui.dp(8f), ui.dp(5f), ui.dp(130f), ui.dp(31f))
         ui.chip(canvas, chip, "Obwód $districtLabel") {
             pickerOpen = true
             onChanged()
@@ -182,7 +182,7 @@ class CarBookView(
             return
         }
 
-        val rowH = ui.dp(58f)
+        val rowH = ui.dp(70f)
         val gap = ui.dp(6f)
         contentHeight = entries.size * (rowH + gap)
 
@@ -218,11 +218,11 @@ class CarBookView(
         }
         ui.label(
             canvas, ui.clip(e.hunter, ui.dp(14f), w * 0.5f, bold = true),
-            rect.left + ui.dp(10f), rect.top + ui.dp(17f), ui.dp(14f),
+            rect.left + ui.dp(10f), rect.top + ui.dp(20f), ui.dp(14f),
             CarTheme.onSurface, bold = true,
         )
         ui.label(
-            canvas, label, rect.right - ui.dp(10f), rect.top + ui.dp(17f), ui.dp(12f),
+            canvas, label, rect.right - ui.dp(10f), rect.top + ui.dp(20f), ui.dp(12f),
             labelColor, bold = e.status == CarApi.Status.ACTIVE || e.status == CarApi.Status.OVERDUE,
             align = Paint.Align.RIGHT,
         )
@@ -238,7 +238,7 @@ class CarBookView(
         val place = e.place.ifBlank { "—" }
         ui.label(
             canvas, ui.clip("$place · $times", ui.dp(12f), rect.width() - ui.dp(20f)),
-            rect.left + ui.dp(10f), rect.top + ui.dp(34f), ui.dp(12f),
+            rect.left + ui.dp(10f), rect.top + ui.dp(42f), ui.dp(12f),
         )
 
         val harvest = if (e.harvest.isEmpty()) "Brak pozyskania" else e.harvest.joinToString(", ")
@@ -246,12 +246,12 @@ class CarBookView(
         ui.label(
             canvas,
             ui.clip(harvest + shots, ui.dp(12f), rect.width() - ui.dp(90f), bold = e.harvest.isNotEmpty()),
-            rect.left + ui.dp(10f), rect.top + ui.dp(50f), ui.dp(12f),
+            rect.left + ui.dp(10f), rect.top + ui.dp(62f), ui.dp(12f),
             if (e.harvest.isEmpty()) CarTheme.muted else CarTheme.harvest,
             bold = e.harvest.isNotEmpty(),
         )
         ui.label(
-            canvas, "nr ${e.number}", rect.right - ui.dp(10f), rect.top + ui.dp(50f),
+            canvas, "nr ${e.number}", rect.right - ui.dp(10f), rect.top + ui.dp(62f),
             ui.dp(11f), CarTheme.muted, align = Paint.Align.RIGHT,
         )
     }
@@ -262,13 +262,13 @@ class CarBookView(
             onChanged()
         }
         val list = districts()
-        val rowH = ui.dp(30f)
+        val rowH = ui.dp(36f)
         // Height must follow where the rows actually start (top + 28) or the
         // last obwód falls outside the card and never gets drawn.
         val cardTop = top + ui.dp(8f)
         val rect = RectF(
             w * 0.22f, cardTop, w * 0.78f,
-            (cardTop + ui.dp(30f) + list.size * rowH + ui.dp(6f)).coerceAtMost(h - ui.dp(10f)),
+            (cardTop + ui.dp(34f) + list.size * rowH + ui.dp(6f)).coerceAtMost(h - ui.dp(10f)),
         )
         ui.card(canvas, rect, CarTheme.surface)
         ui.label(

@@ -88,7 +88,7 @@ class CarMapChrome(
         ui.begin(width, height)
         val w = width.toFloat()
         // Everything sits above the tab bar, which is drawn last so its taps win.
-        val h = height - ui.dp(34f)
+        val h = height - ui.dp(42f)
 
         if (tab == CarTab.BOOK) {
             book.draw(canvas, width, height, h)
@@ -163,7 +163,7 @@ class CarMapChrome(
             .keys
             .take(7)
         if (types.isEmpty()) return
-        val rowH = ui.dp(15f)
+        val rowH = ui.dp(19f)
         val rect = RectF(
             ui.dp(10f),
             h - ui.dp(30f) - types.size * rowH,
@@ -244,8 +244,8 @@ class CarMapChrome(
             layersOpen = false
         }
 
-        var y = rect.top + ui.dp(34f)
-        val rowH = ui.dp(26f)
+        var y = rect.top + ui.dp(36f)
+        val rowH = ui.dp(32f)
         for ((label, on, unavailable) in CarMapStore.layerSummary(data, renderer.droppedSources())) {
             if (y > rect.bottom - rowH) break
             ui.checkboxRow(

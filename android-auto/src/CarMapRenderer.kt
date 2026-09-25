@@ -42,6 +42,10 @@ class CarMapRenderer(private val context: Context) {
          * costing a few hundred milliseconds.
          */
         private const val OVERSCAN = 1.6f
+        /** A render is slow, but not this slow; past this the latch is forced. */
+        private const val WATCHDOG_MS = 12_000L
+        private const val RETRY_MS = 4_000L
+        private const val MAX_AUTO_RETRIES = 3
     }
 
     /** Size of the rendered bitmap (surface size × OVERSCAN). */
@@ -84,6 +88,8 @@ class CarMapRenderer(private val context: Context) {
     private var dragY = 0f
     private var snapshotInFlight = false
     private var snapshotQueued = false
+    /** Consecutive failures with nothing on screen. */
+    private var failures = 0
 
     /** User position, drawn on top of the map when known. */
     private var userLocation: LatLng? = null
@@ -112,10 +118,20 @@ class CarMapRenderer(private val context: Context) {
             Log.e(TAG, "MapLibre init failed", e)
             status = "Błąd inicjalizacji mapy"
         }
+        val resized = width != this.width || height != this.height
         this.surface = surface
         this.width = width
         this.height = height
         this.pixelRatio = (dpi / 160f).coerceAtLeast(1f)
+        if (resized) {
+            // Old frame belongs to a different geometry; keeping it would draw
+            // the map and its pins at the wrong offsets.
+            lastBitmap = null
+            lastSnapshot = null
+            dragX = 0f
+            dragY = 0f
+        }
+        failures = 0
         // Paint immediately: until the first snapshot lands the car screen would
         // otherwise stay empty, which is indistinguishable from a broken surface.
         drawStatus()
@@ -156,6 +172,9 @@ class CarMapRenderer(private val context: Context) {
 
     fun detach() {
         main.removeCallbacks(commitDrag)
+        main.removeCallbacks(watchdog)
+        snapshotInFlight = false
+        snapshotQueued = false
         snapshotter?.cancel()
         snapshotter = null
         surface = null
@@ -343,7 +362,14 @@ class CarMapRenderer(private val context: Context) {
             return
         }
         Log.i(TAG, "rebuildSnapshotter style=${json.length}B camera=${camera.target}/${camera.zoom}")
+        // A cancelled snapshotter never calls back, so the latch has to be
+        // cleared here. Leaving it set wedged the renderer permanently: every
+        // later request just queued itself and the map froze — white, if the
+        // surface had been recreated in the meantime.
         snapshotter?.cancel()
+        snapshotInFlight = false
+        snapshotQueued = false
+        main.removeCallbacks(watchdog)
         bufferW = (width * OVERSCAN).toInt()
         bufferH = (height * OVERSCAN).toInt()
         val options = MapSnapshotter.Options(bufferW, bufferH)
@@ -355,6 +381,16 @@ class CarMapRenderer(private val context: Context) {
         requestSnapshot()
     }
 
+    /** Last resort: a render that never calls back must not freeze the map. */
+    private val watchdog = Runnable {
+        if (snapshotInFlight) {
+            Log.w(TAG, "snapshot did not return in ${WATCHDOG_MS}ms — releasing the latch")
+            snapshotInFlight = false
+            snapshotQueued = false
+            requestSnapshot()
+        }
+    }
+
     private fun requestSnapshot() {
         val snapshotter = snapshotter ?: return
         if (snapshotInFlight) {
@@ -363,9 +399,19 @@ class CarMapRenderer(private val context: Context) {
             return
         }
         snapshotInFlight = true
+        main.removeCallbacks(watchdog)
+        main.postDelayed(watchdog, WATCHDOG_MS)
         snapshotter.start({ snapshot ->
             snapshotInFlight = false
+            main.removeCallbacks(watchdog)
+            failures = 0
             status = null
+            // This frame IS the current camera, so any accumulated drag is
+            // already baked into it. Keeping the old offsets around shifted the
+            // next repaint and threw the pins off the map under them.
+            dragX = 0f
+            dragY = 0f
+            main.removeCallbacks(commitDrag)
             lastSnapshot = snapshot
             lastBitmap = snapshot.bitmap
             Log.i(TAG, "snapshot ready ${snapshot.bitmap.width}x${snapshot.bitmap.height}")
@@ -376,12 +422,23 @@ class CarMapRenderer(private val context: Context) {
             }
         }, { error ->
             snapshotInFlight = false
+            main.removeCallbacks(watchdog)
             Log.e(TAG, "snapshot failed: $error")
             if (!retryWithout(error)) {
-                // Keep the last good frame if there is one; a stale map beats none.
+                // Keep the last good frame if there is one; a stale map beats
+                // none. With nothing to show, keep trying rather than sitting
+                // on a blank screen.
                 if (lastBitmap == null) {
-                    status = "Nie udało się wczytać mapy"
+                    failures++
+                    status = if (failures >= MAX_AUTO_RETRIES) {
+                        "Mapa niedostępna — dotknij Odśwież"
+                    } else {
+                        "Wczytywanie mapy…"
+                    }
                     drawStatus()
+                    if (failures < MAX_AUTO_RETRIES) {
+                        main.postDelayed({ rebuildSnapshotter() }, RETRY_MS)
+                    }
                 }
             }
         })

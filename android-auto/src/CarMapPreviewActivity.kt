@@ -48,7 +48,9 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
             onLocate = { location.current?.let { renderer.setCamera(it, 14.0) } },
             showRefresh = true,
         )
-        location.onUpdate = { renderer.setUserLocation(location.current) }
+        location.onUpdate = {
+            chrome.updateLocation(location.current, location.accuracy, location.fixedAt)
+        }
         location.start()
         renderer.overlay = { canvas, w, h -> chrome.draw(canvas, w, h) }
         val view = SurfaceView(this)

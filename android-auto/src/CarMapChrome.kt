@@ -2,6 +2,7 @@ package com.smallgis.pzl.client.car
 
 import android.graphics.Canvas
 import android.graphics.RectF
+import org.maplibre.android.geometry.LatLng
 
 /**
  * The app's UI, painted over the map.
@@ -39,6 +40,43 @@ class CarMapChrome(
      * so this is stated outright instead of left to be read off the map.
      */
     var whereAmI: CarWhereAmI? = null
+        private set
+
+    /**
+     * One entry point for a new fix, shared by the car Screen and the dev
+     * harness — position, its uncertainty, and which rewir it falls in. Keeping
+     * this in the Screen meant the harness could not exercise it.
+     */
+    fun updateLocation(position: LatLng?, accuracy: Float, fixedAt: Long) {
+        renderer.setUserLocation(position)
+        val stale = fixedAt > 0 && System.currentTimeMillis() - fixedAt > STALE_FIX_MS
+        renderer.setUserAccuracy(accuracy, stale)
+        whereAmI = when {
+            position == null -> null
+            stale -> CarWhereAmI("Lokalizacja nieaktualna", true)
+            else -> {
+                val rewir = CarMapStore.rewirAt(data, position.longitude, position.latitude)
+                val metres = "±${accuracy.toInt()}m"
+                if (rewir == null) {
+                    CarWhereAmI("Poza rewirami koła · $metres", true)
+                } else {
+                    val district = CarApi.access(context)?.districts
+                        ?.firstOrNull { it.first == rewir.districtId }?.second
+                    CarWhereAmI(
+                        listOfNotNull("Rewir ${rewir.name}", district?.let { "Obwód $it" }, metres)
+                            .joinToString(" · "),
+                        false,
+                    )
+                }
+            }
+        }
+        renderer.redraw()
+    }
+
+    private companion object {
+        /** Past this a fix is shown as stale rather than trusted. */
+        const val STALE_FIX_MS = 30_000L
+    }
 
     var data: CarMapData = CarMapStore.fallback()
     private var selected: CarMarker? = null

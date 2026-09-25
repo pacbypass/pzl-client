@@ -12,16 +12,12 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "pl.pzl.mobileapp.client",
+      "bundleIdentifier": "pl.pacbypass.polowanie",
       "infoPlist": {
-        "UIBackgroundModes": [
-          "location",
-          "fetch",
-          "remote-notification"
-        ],
-        "NSLocationWhenInUseUsageDescription": "Aplikacja używa lokalizacji do wyświetlania Twojej pozycji na mapie łowieckiej.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Podczas polowania aplikacja aktualizuje pozycję również w tle."
-      }
+        "NSLocationWhenInUseUsageDescription": "Aplikacja pokazuje Twoją pozycję na mapie łowieckiej, aby ułatwić sprawdzenie, w którym rewirze się znajdujesz.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "buildNumber": "1"
     },
     "android": {
       "package": "pl.pacbypass.polowanie",

@@ -115,7 +115,10 @@ class CarMapChrome(
             onLocate?.invoke()
         }
 
-        if (!layersOpen) {
+        // The card takes the bottom-left corner the legend lives in, so the
+        // legend steps aside while one is open — as it does on the phone, where
+        // the device card covers it.
+        if (!layersOpen && selected == null && selectedDevice == null) {
             drawLegend(canvas, h)
             ui.label(canvas, subtitle(), ui.dp(10f), h - ui.dp(4f), ui.dp(11f), CarTheme.muted)
         }

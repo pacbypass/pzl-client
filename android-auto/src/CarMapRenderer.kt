@@ -45,6 +45,10 @@ class CarMapRenderer(private val context: Context) {
         /** A render is slow, but not this slow; past this the latch is forced. */
         private const val WATCHDOG_MS = 12_000L
         private const val RETRY_MS = 4_000L
+        /** Pinch settles before a render is worth starting. */
+        private const val ZOOM_SETTLE_MS = 220L
+        /** ~2.2MP, i.e. an 8.8MB frame, whatever the screen. */
+        private const val MAX_BUFFER_PIXELS = 2_200_000f
         private const val MAX_AUTO_RETRIES = 3
     }
 
@@ -90,6 +94,8 @@ class CarMapRenderer(private val context: Context) {
     private var snapshotQueued = false
     /** Consecutive failures with nothing on screen. */
     private var failures = 0
+    private var frames = 0L
+    private var frameMs = 0L
 
     /** User position, drawn on top of the map when known. */
     private var userLocation: LatLng? = null
@@ -172,7 +178,9 @@ class CarMapRenderer(private val context: Context) {
 
     fun detach() {
         main.removeCallbacks(commitDrag)
+        main.removeCallbacks(commitZoom)
         main.removeCallbacks(watchdog)
+        gestureScale = 1f
         snapshotInFlight = false
         snapshotQueued = false
         snapshotter?.cancel()
@@ -200,7 +208,17 @@ class CarMapRenderer(private val context: Context) {
     }
 
     fun setUserLocation(location: LatLng?) {
+        val previous = userLocation
         userLocation = location
+        // GPS ticks every few seconds; repainting for a metre of drift is work
+        // for nothing.
+        if (previous != null && location != null) {
+            val moved = Math.hypot(
+                (previous.latitude - location.latitude) * 111_000,
+                (previous.longitude - location.longitude) * 70_000,
+            )
+            if (moved < 5) return
+        }
         redrawLastFrame()
     }
 
@@ -306,6 +324,13 @@ class CarMapRenderer(private val context: Context) {
         setCamera(target, camera.zoom)
     }
 
+    /** Live pinch state: the frame is scaled in place until the fingers stop. */
+    private var gestureScale = 1f
+    private var gestureFocusX = 0f
+    private var gestureFocusY = 0f
+
+    private val commitZoom = Runnable { commitZoomNow() }
+
     fun onZoom(factor: Float) = onZoomAt(width / 2f, height / 2f, factor)
 
     /**
@@ -313,21 +338,40 @@ class CarMapRenderer(private val context: Context) {
      * the middle of the screen — the map moves the way it does on the phone.
      */
     fun onZoomAt(focusX: Float, focusY: Float, factor: Float) {
-        val zoom = (camera.zoom + Math.log(factor.toDouble()) / Math.log(2.0))
-            .coerceIn(4.0, 17.0)
-        val snapshot = lastSnapshot
-        val k = Math.pow(2.0, zoom - camera.zoom).toFloat()
-        if (snapshot == null || k <= 0f || Math.abs(k - 1f) < 0.001f) {
-            setCamera(camera.target ?: FALLBACK, zoom)
+        if (lastSnapshot == null) {
+            setCamera(
+                camera.target ?: FALLBACK,
+                (camera.zoom + Math.log(factor.toDouble()) / Math.log(2.0)).coerceIn(4.0, 17.0),
+            )
             return
         }
+        // A pinch fires many scale events, and re-rendering on each one means
+        // waiting on map tiles over and over. Scale the frame already in hand
+        // while the fingers move, and render once when they settle.
+        gestureFocusX = focusX
+        gestureFocusY = focusY
+        gestureScale = (gestureScale * factor).coerceIn(0.2f, 5f)
+        redrawLastFrame()
+        main.removeCallbacks(commitZoom)
+        main.postDelayed(commitZoom, ZOOM_SETTLE_MS)
+    }
+
+    private fun commitZoomNow() {
+        val k = gestureScale
+        val snapshot = lastSnapshot
+        if (snapshot == null || Math.abs(k - 1f) < 0.01f) {
+            gestureScale = 1f
+            return
+        }
+        val zoom = (camera.zoom + Math.log(k.toDouble()) / Math.log(2.0)).coerceIn(4.0, 17.0)
         val cx = bufferW / 2f
         val cy = bufferH / 2f
-        val fx = toBufferX(focusX)
-        val fy = toBufferY(focusY)
+        val fx = toBufferX(gestureFocusX)
+        val fy = toBufferY(gestureFocusY)
         val target = snapshot.latLngForPixel(
             PointF(cx + (fx - cx) * (1f - 1f / k), cy + (fy - cy) * (1f - 1f / k)),
         ) ?: camera.target ?: FALLBACK
+        gestureScale = 1f
         setCamera(target, zoom)
     }
 
@@ -370,8 +414,18 @@ class CarMapRenderer(private val context: Context) {
         snapshotInFlight = false
         snapshotQueued = false
         main.removeCallbacks(watchdog)
-        bufferW = (width * OVERSCAN).toInt()
-        bufferH = (height * OVERSCAN).toInt()
+        // A 1.6x buffer on a 1920x1080 head unit would be a 21MB bitmap per
+        // frame; capped by pixel budget so the overscan shrinks instead of the
+        // app dying on a big screen.
+        val overscan = run {
+            val wanted = width.toFloat() * height * OVERSCAN * OVERSCAN
+            if (wanted <= MAX_BUFFER_PIXELS) OVERSCAN
+            else Math.sqrt((MAX_BUFFER_PIXELS / (width.toFloat() * height)).toDouble())
+                .toFloat().coerceAtLeast(1f)
+        }
+        bufferW = (width * overscan).toInt()
+        bufferH = (height * overscan).toInt()
+        Log.i(TAG, "buffer ${bufferW}x$bufferH (overscan ${"%.2f".format(overscan)})")
         val options = MapSnapshotter.Options(bufferW, bufferH)
             .withStyleJson(json)
             .withCameraPosition(camera)
@@ -399,6 +453,7 @@ class CarMapRenderer(private val context: Context) {
             return
         }
         snapshotInFlight = true
+        val startedAt = android.os.SystemClock.uptimeMillis()
         main.removeCallbacks(watchdog)
         main.postDelayed(watchdog, WATCHDOG_MS)
         snapshotter.start({ snapshot ->
@@ -414,7 +469,11 @@ class CarMapRenderer(private val context: Context) {
             main.removeCallbacks(commitDrag)
             lastSnapshot = snapshot
             lastBitmap = snapshot.bitmap
-            Log.i(TAG, "snapshot ready ${snapshot.bitmap.width}x${snapshot.bitmap.height}")
+            Log.i(
+                TAG,
+                "snapshot ready ${snapshot.bitmap.width}x${snapshot.bitmap.height} " +
+                    "in ${android.os.SystemClock.uptimeMillis() - startedAt}ms",
+            )
             drawFrame(snapshot.bitmap, 0f, 0f)
             if (snapshotQueued) {
                 snapshotQueued = false
@@ -512,13 +571,28 @@ class CarMapRenderer(private val context: Context) {
             Log.e(TAG, "lockCanvas failed", e)
             return
         }
+        val startedAt = android.os.SystemClock.uptimeMillis()
         try {
             canvas.drawColor(Color.rgb(0xE6, 0xED, 0xE1))
+            val zooming = Math.abs(gestureScale - 1f) > 0.01f
+            if (zooming) {
+                // Map and its pins scale together about the pinch focus; the
+                // chrome must not, so it is drawn outside this transform.
+                canvas.save()
+                canvas.scale(gestureScale, gestureScale, gestureFocusX, gestureFocusY)
+            }
             canvas.drawBitmap(bitmap, offsetX - marginX(), offsetY - marginY(), null)
             drawOverlays(canvas, offsetX, offsetY)
+            if (zooming) canvas.restore()
             overlay?.invoke(canvas, width, height)
         } finally {
             surface.unlockCanvasAndPost(canvas)
+        }
+        val took = android.os.SystemClock.uptimeMillis() - startedAt
+        frames++
+        frameMs += took
+        if (frames % 20L == 0L) {
+            Log.i(TAG, "draw: ${frameMs / frames}ms avg over $frames frames (last ${took}ms)")
         }
     }
 

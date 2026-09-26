@@ -49,17 +49,31 @@ class CarBookView(
         if (entries.isEmpty() && !loading) reload()
     }
 
+    /**
+     * Bumped by every reload. A request remembers the generation it started
+     * in, and its answer is dropped if another reload (a refresh, a different
+     * obwód) has happened since — otherwise a late page 2 of obwód A landed on
+     * top of obwód B, or reset the page counter so rows 101–200 were skipped.
+     */
+    private var generation = 0
+    /** No more pages: the last one came back short or empty. */
+    private var exhausted = false
+
     fun reload() {
         val id = districtId ?: districts().firstOrNull()?.first ?: return
+        val gen = ++generation
         loading = true
         error = null
         page = 1
+        exhausted = false
         CarApi.book(
             context, id, 1,
             onResult = { list, t, at, fromCache ->
+                if (gen != generation) return@book
                 entries = list
                 total = t
                 fetchedAt = at
+                exhausted = list.size < CarApi.BOOK_PAGE_SIZE || list.size >= t
                 // Say it plainly when the data did not come from the network,
                 // however fresh the copy happens to be.
                 offline = fromCache
@@ -67,6 +81,7 @@ class CarBookView(
                 onChanged()
             },
             onError = { message ->
+                if (gen != generation) return@book
                 // Keep whatever is already on screen; an empty list with an
                 // error is worse than stale entries in the woods.
                 error = message
@@ -78,22 +93,31 @@ class CarBookView(
 
     private fun loadMore() {
         val id = districtId ?: return
-        if (loading || entries.size >= total) return
+        if (loading || exhausted || entries.size >= total) return
+        val gen = generation
         loading = true
         val next = page + 1
         CarApi.book(
             context, id, next,
             onResult = { list, t, at, fromCache ->
+                if (gen != generation) return@book
                 page = next
                 total = t
                 if (fromCache) offline = true
                 // Dedupe: a page boundary can overlap when an entry is added.
                 val seen = entries.map { it.id }.toSet()
                 entries = entries + list.filter { it.id !in seen }
+                // Stop at the end, even when the counts do not add up (an
+                // entry added or removed between pages): asking again would
+                // fetch — and cache — one empty page per scroll, forever.
+                if (list.size < CarApi.BOOK_PAGE_SIZE || next * CarApi.BOOK_PAGE_SIZE >= t) {
+                    exhausted = true
+                }
                 loading = false
                 onChanged()
             },
             onError = { message ->
+                if (gen != generation) return@book
                 error = message
                 loading = false
                 onChanged()
@@ -298,10 +322,10 @@ class CarBookView(
     }
 
     private fun fmt(iso: String?): String {
-        if (iso == null) return "—"
+        val ms = CarTime.parse(iso)
+        if (ms <= 0L) return "—"
         return try {
-            val t = java.time.Instant.parse(if (iso.endsWith("Z") || iso.contains('+')) iso else iso + "Z")
-                .atZone(java.time.ZoneId.systemDefault())
+            val t = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault())
             String.format(Locale("pl"), "%02d.%02d, %02d:%02d",
                 t.dayOfMonth, t.monthValue, t.hour, t.minute)
         } catch (e: Exception) {

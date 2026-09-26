@@ -219,6 +219,7 @@ class CarMapRenderer(private val context: Context) {
         main.removeCallbacks(renderSoon)
         renderDueAt = 0L
         main.removeCallbacks(watchdog)
+        main.removeCallbacks(rebuildLater)
         snapshotInFlight = false
         snapshotQueued = false
         snapshotter?.cancel()
@@ -266,8 +267,21 @@ class CarMapRenderer(private val context: Context) {
         Log.i(TAG, "setStyle ${json.length}B")
         if (json == styleJsonFull) return
         styleJsonFull = json
-        disabledSources.clear()
-        styleJson = json
+        // Layers already found broken stay dropped: the car now re-publishes
+        // the style every few minutes (fresh occupancy), and offline that
+        // meant failing through every raster source all over again each time.
+        // "Odśwież" still retries them (retryDroppedSources).
+        styleJson = if (disabledSources.isEmpty()) {
+            json
+        } else {
+            try {
+                CarStyleFilter.without(json, disabledSources)
+            } catch (e: Throwable) {
+                Log.e(TAG, "could not filter style", e)
+                disabledSources.clear()
+                json
+            }
+        }
         rebuildSnapshotter()
     }
 
@@ -470,6 +484,13 @@ class CarMapRenderer(private val context: Context) {
             Log.w(TAG, "rebuildSnapshotter: no size yet ($width x $height)")
             return
         }
+        if (surface == null) {
+            // Detached: a late retry must not bring two snapshotters (and
+            // their tile fetches and frame buffers) back for a screen that
+            // is gone. attach() rebuilds.
+            Log.i(TAG, "rebuildSnapshotter: detached, skipping")
+            return
+        }
         Log.i(TAG, "rebuildSnapshotter style=${json.length}B camera=${camera.target}/${camera.zoom}")
         // A cancelled snapshotter never calls back, so the latch has to be
         // cleared here. Leaving it set wedged the renderer permanently: every
@@ -578,9 +599,10 @@ class CarMapRenderer(private val context: Context) {
             // Drawn against the camera as it is NOW, which may have moved on
             // while this rendered; the frame lands where it belongs.
             redrawLastFrame()
+            failuresWithFrame = 0
             if (snapshotQueued) {
                 snapshotQueued = false
-                main.post { requestSnapshot() }
+                scheduleRender(0)
             } else {
                 renderContextIfNeeded()
             }
@@ -601,12 +623,31 @@ class CarMapRenderer(private val context: Context) {
                     }
                     drawStatus()
                     if (failures < MAX_AUTO_RETRIES) {
-                        main.postDelayed({ rebuildSnapshotter() }, RETRY_MS)
+                        main.removeCallbacks(rebuildLater)
+                        main.postDelayed(rebuildLater, RETRY_MS)
                     }
+                } else if (failuresWithFrame < MAX_AUTO_RETRIES) {
+                    // A frame is on screen, but not of where the user has
+                    // moved to — and a render they asked for while this one
+                    // ran was queued behind it. Dropping both left the old
+                    // frame, shifted, with blank edges until the next touch.
+                    // Try again after a pause; bounded, so a render that
+                    // always fails does not spin.
+                    failuresWithFrame++
+                    snapshotQueued = false
+                    scheduleRender(RETRY_MS / 2 * failuresWithFrame)
+                } else {
+                    snapshotQueued = false
                 }
             }
         })
     }
+
+    /** Consecutive failed renders while an older frame stays on screen. */
+    private var failuresWithFrame = 0
+
+    /** Named so detach() can take it back: a rebuild must not outlive the screen. */
+    private val rebuildLater = Runnable { rebuildSnapshotter() }
 
     private var staleRetries = 0
 
@@ -696,7 +737,8 @@ class CarMapRenderer(private val context: Context) {
             Log.e(TAG, "could not filter style", e)
             return false
         }
-        main.post { rebuildSnapshotter() }
+        main.removeCallbacks(rebuildLater)
+        main.post(rebuildLater)
         return true
     }
 
@@ -817,4 +859,10 @@ data class CarMarker(
     val subtitle: String,
     val position: LatLng,
     val color: Int,
+    /**
+     * Every `obwód|REWIR` this marker may be known by. Rewir labels repeat
+     * across obwody, and the book and the map layer do not always number
+     * obwody the same way, so a polygon is matched against all of them.
+     */
+    val keys: List<String> = listOf(id),
 )

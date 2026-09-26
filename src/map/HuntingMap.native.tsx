@@ -183,6 +183,32 @@ export function HuntingMap({
         </ShapeSource>
       ) : null}
 
+      {/* Follow-me marker, drawn on top of everything: the native puck sits
+          under the overlays, so inside a taken rewir's red fill only its
+          heading arrow showed — no good for finding yourself while driving.
+          Mounted when following starts, so its layer is added last (on top). */}
+      {trackTo ? (
+        <ShapeSource
+          id="follow-me"
+          shape={{
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [trackTo.longitude, trackTo.latitude] },
+            properties: {},
+          }}
+        >
+          <CircleLayer
+            id="follow-me-dot"
+            style={{
+              circleRadius: 9,
+              circleColor: '#1565c0',
+              circleStrokeColor: '#ffffff',
+              circleStrokeWidth: 3,
+              circlePitchAlignment: 'map',
+            }}
+          />
+        </ShapeSource>
+      ) : null}
+
       {/* Native render mode draws the standard puck WITH the GPS accuracy ring
           (the "you might be here" circle) and a heading arrow, and keeps
           refining it as the fix improves. */}

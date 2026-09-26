@@ -23,7 +23,8 @@ import type { Option } from '@/features/huntingBook/lookups';
  * Polowania tab (which only ever loads one obwód at a time).
  */
 
-/** Hard cap on pages scanned per obwód, at 10 entries/page. */
+/** Hard cap on pages scanned per obwód (BOOK_PAGE_SIZE entries each). With a
+ *  100-entry page the first request almost always holds every open hunt. */
 const MAX_PAGES = 3;
 /**
  * Entries come newest-first (entry number descending ≈ creation order) and open

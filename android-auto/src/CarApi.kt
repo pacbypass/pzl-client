@@ -20,6 +20,8 @@ import org.json.JSONObject
 object CarApi {
 
     private const val TAG = "CarApi"
+    /** Keep in step with BOOK_PAGE_SIZE in src/features/huntingBook/book.ts. */
+    private const val PAGE_SIZE = 100
     private val io = Executors.newSingleThreadExecutor()
 
     data class Access(
@@ -141,7 +143,8 @@ object CarApi {
         io.execute {
             try {
                 val url = "${access.baseUrl}/units/${access.unitId}/hunting-districts/" +
-                    "$districtId/huntings?year=${access.year}&page=$page"
+                    "$districtId/huntings?year=${access.year}&page=$page" +
+                    "&itemsPerPage=$PAGE_SIZE"
                 val body = try {
                     get(url, access.token)
                 } catch (e: Unauthorized) {

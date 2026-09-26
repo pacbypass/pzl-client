@@ -175,7 +175,18 @@ function parseEntries(data: unknown): { entries: BookEntry[]; total: number } {
 }
 
 /**
- * Paginated book — the endpoint returns 10 entries/page (1-indexed `page`),
+ * Entries per request. The server defaults to 10 and accepts anything (500+
+ * simply returns the whole season), so this is a bandwidth choice, not a limit.
+ * Measured against a 446-entry season: 50 → 119KB/560ms, 100 → 240KB/660ms,
+ * 200 → 470KB/900ms, all → 874KB/1.1s. 100 cuts requests tenfold while
+ * halving what 200 would pull down — and since the list shows ~5 rows, one
+ * page is already twenty screens of scrolling. Raise it here if you would
+ * rather trade signal for round trips.
+ */
+export const BOOK_PAGE_SIZE = 100;
+
+/**
+ * Paginated book — 1-indexed `page` of BOOK_PAGE_SIZE entries,
  * newest-first (entry number descending), plus a `total`. Infinite scroll
  * fetches the next page; a background refetch re-pulls the loaded pages so
  * updates to already-listed (older) hunts are picked up.
@@ -212,7 +223,7 @@ export async function fetchBookPage(
 ): Promise<BookPage> {
   const data = await apiRequest(
     `/units/${unitId}/hunting-districts/${districtId}/huntings`,
-    { query: { year, page } },
+    { query: { year, page, itemsPerPage: BOOK_PAGE_SIZE } },
   );
   return { ...parseEntries(data), page };
 }
@@ -234,7 +245,7 @@ export function useDistrictBook(
     queryFn: async ({ pageParam }) => {
       const data = await apiRequest(
         `/units/${unitId}/hunting-districts/${districtId}/huntings`,
-        { query: { year, page: pageParam } },
+        { query: { year, page: pageParam, itemsPerPage: BOOK_PAGE_SIZE } },
       );
       return { ...parseEntries(data), page: pageParam as number };
     },

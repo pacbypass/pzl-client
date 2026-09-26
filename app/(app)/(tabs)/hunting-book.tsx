@@ -170,7 +170,8 @@ export default function HuntingBookScreen() {
    * spinner on until all are in.
    */
   const refreshAll = useCallback(async () => {
-    if (refreshing) return;
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
     setRefreshing(true);
     try {
       const key = bookKey(unitId, districtId, year);
@@ -195,9 +196,10 @@ export default function HuntingBookScreen() {
         e instanceof Error ? e.message : 'Nie udało się odświeżyć książki.',
       );
     } finally {
+      refreshingRef.current = false;
       setRefreshing(false);
     }
-  }, [refreshing, qc, unitId, districtId, year, query]);
+  }, [qc, unitId, districtId, year, query]);
 
   /**
    * Coming back to the tab pulls the newest page again, if it has gone stale.

@@ -77,7 +77,9 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
             val handler = android.os.Handler(android.os.Looper.getMainLooper())
             for (i in 1..10) {
                 handler.postDelayed({
-                    renderer.onZoomAt(400f, 240f, if (i <= 5) 1.12f else 0.94f)
+                    // Off-centre, as fingers usually are: the spot under
+                    // them must stay put through the whole pinch.
+                    renderer.onZoomAt(600f, 150f, if (i <= 5) 1.12f else 0.94f)
                     android.util.Log.i("CarMapPreview", "pinch step $i")
                 }, 3000L + i * 70L)
             }

@@ -217,6 +217,7 @@ class CarMapRenderer(private val context: Context) {
 
     fun detach() {
         main.removeCallbacks(renderSoon)
+        renderDueAt = 0L
         main.removeCallbacks(watchdog)
         snapshotInFlight = false
         snapshotQueued = false
@@ -376,17 +377,36 @@ class CarMapRenderer(private val context: Context) {
         val target = view.latLngAt(width / 2f - dx, height / 2f - dy) ?: return
         camera = CameraPosition.Builder().target(target).zoom(camera.zoom).build()
         redrawLastFrame()
-        scheduleRender(if (view().let { it == null || it.nearEdge() }) 60 else DRAG_SETTLE_MS)
+        if (view().let { it == null || it.nearEdge() }) {
+            // Running off the frame: render now-ish, and do not let the next
+            // move event push it back, or a long drag never renders at all.
+            scheduleRender(60, postpone = false)
+        } else {
+            scheduleRender(DRAG_SETTLE_MS)
+        }
     }
 
     /** Kept for callers that report the end of a drag; the render is already due. */
     fun onDragEnd() = scheduleRender(0)
 
-    private val renderSoon = Runnable { requestSnapshot() }
+    private val renderSoon = Runnable {
+        renderDueAt = 0L
+        requestSnapshot()
+    }
+    /** When `renderSoon` is due, or 0 when none is pending. */
+    private var renderDueAt = 0L
 
-    private fun scheduleRender(delayMs: Long) {
+    /**
+     * Debounced by default: each call pushes the render back, so it starts
+     * once the gesture goes quiet. With `postpone = false` a render already
+     * due sooner is left alone.
+     */
+    private fun scheduleRender(delayMs: Long, postpone: Boolean = true) {
+        val due = android.os.SystemClock.uptimeMillis() + delayMs
+        if (!postpone && renderDueAt != 0L && renderDueAt <= due) return
         main.removeCallbacks(renderSoon)
-        main.postDelayed(renderSoon, delayMs)
+        renderDueAt = due
+        main.postAtTime(renderSoon, due)
     }
 
     fun onZoom(factor: Float) = onZoomAt(width / 2f, height / 2f, factor)
@@ -509,6 +529,7 @@ class CarMapRenderer(private val context: Context) {
 
     private fun requestSnapshot() {
         main.removeCallbacks(renderSoon)
+        renderDueAt = 0L
         val snapshotter = snapshotter ?: return
         if (snapshotInFlight) {
             // Coalesce: one more render once the current one lands.

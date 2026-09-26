@@ -6,6 +6,7 @@ import React, {
   useState,
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ACTIVE_UNIT_KEY } from '@/units/storage';
 import { useQuery } from '@tanstack/react-query';
 import { apiRequest } from '@/api/client';
 import { config } from '@/config';
@@ -52,7 +53,7 @@ type UnitState = {
 };
 
 const UnitContext = createContext<UnitState | null>(null);
-const STORAGE_KEY = 'pzl.activeUnitId';
+const STORAGE_KEY = ACTIVE_UNIT_KEY;
 
 export function UnitProvider({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -96,9 +97,16 @@ export function UnitProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  // Default to the first unit once the list loads and nothing is selected.
+  // Signed out: the next account starts from its own first koło.
   useEffect(() => {
-    if (!activeUnitId && units.length > 0) {
+    if (!isAuthenticated) setActiveUnitIdState(null);
+  }, [isAuthenticated]);
+
+  // Default to the first unit once the list loads and nothing is selected —
+  // or when the remembered koło is not one this account belongs to.
+  useEffect(() => {
+    if (units.length === 0) return;
+    if (!activeUnitId || !units.some((u) => u.id === activeUnitId)) {
       setActiveUnitIdState(units[0].id);
     }
   }, [activeUnitId, units]);

@@ -25,7 +25,7 @@ function decodeIdToken(idToken?: string): Record<string, unknown> | null {
 export default function ProfileScreen() {
   const theme = useTheme();
   const router = useRouter();
-  const { tokens, signOut, hasSavedCredentials, disableAutoLogin } = useAuth();
+  const { tokens, signOut, hasSavedCredentials } = useAuth();
   const { units, activeUnit, user } = useUnits();
 
   const claims = decodeIdToken(tokens?.idToken);
@@ -86,7 +86,7 @@ export default function ProfileScreen() {
             description={
               hasSavedCredentials
                 ? 'Pozostajesz zalogowany — sesja odnawia się automatycznie w tle. Dane są dostępne offline (z zapisaną datą aktualizacji).'
-                : 'Po wygaśnięciu sesji konieczne będzie ponowne logowanie.'
+                : 'Zaloguj się numerem i hasłem, aby sesja odnawiała się automatycznie.'
             }
             left={(p) => (
               <List.Icon
@@ -96,13 +96,6 @@ export default function ProfileScreen() {
               />
             )}
           />
-          {hasSavedCredentials ? (
-            <Card.Actions>
-              <Button onPress={disableAutoLogin} textColor={theme.colors.error}>
-                Wyłącz i zapomnij dane
-              </Button>
-            </Card.Actions>
-          ) : null}
         </Card>
 
         <Card mode="outlined" style={styles.card}>

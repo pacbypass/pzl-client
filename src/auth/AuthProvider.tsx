@@ -8,6 +8,7 @@ import React, {
   useState,
 } from 'react';
 import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   makeRedirectUri,
   useAuthRequest,
@@ -15,7 +16,7 @@ import {
   type DiscoveryDocument,
 } from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
-import { onlineManager } from '@tanstack/react-query';
+import { onlineManager, useQueryClient } from '@tanstack/react-query';
 import { config } from '@/config';
 import {
   clearCredentials,
@@ -27,10 +28,14 @@ import {
   type Credentials,
   type TokenSet,
 } from '@/auth/tokenStore';
+import { ACTIVE_UNIT_KEY } from '@/units/storage';
 import { demoIdToken, isDemo, loadDemoFlag, setDemo } from '@/api/demo';
 import { startWebLogin, completeWebLogin } from '@/auth/webAuth';
 import { parsePastedToken, refreshBridgeToken } from '@/auth/authToken';
 import { headlessLogin } from '@/auth/headlessLogin';
+import { setUnauthorizedHandler } from '@/api/client';
+import { asyncStoragePersister } from '@/offline/queryClient';
+import { clearCarHandoff } from '@/features/map/carHandoff';
 
 loadDemoFlag();
 
@@ -41,11 +46,17 @@ const discovery: DiscoveryDocument = {
   tokenEndpoint: config.oidc.tokenEndpoint,
 };
 
-const EXPIRY_SKEW_MS = 60_000;
-// How often to check, and how far before the (~30-day) token expires to
-// proactively re-login in the background.
-const BACKGROUND_CHECK_MS = 5 * 60_000;
-const REAUTH_WINDOW_MS = 24 * 60 * 60_000; // 1 day
+/**
+ * The access token lasts ~25 minutes and the server issues NO refresh token
+ * (verified), so the only way to renew is a silent re-login with the saved
+ * credentials. That costs four requests, so it happens only when needed: a
+ * token about to lapse (within this margin) or one the server has rejected.
+ */
+const EXPIRY_SKEW_MS = 2 * 60_000;
+/** While the app is open, check this often whether the token is about to lapse. */
+const BACKGROUND_CHECK_MS = 60_000;
+/** A login bounced back to the form is re-tried once before it counts. */
+const BAD_CREDENTIALS_RETRY_MS = 3_000;
 
 type AuthState = {
   ready: boolean;
@@ -54,18 +65,17 @@ type AuthState = {
   tokens: TokenSet | null;
   signIn: () => Promise<void>;
   signInDemo: () => Promise<void>;
-  /** Native username/password login (no browser). `remember` stores credentials
-   *  in the secure keychain for automatic re-login when the 30-day token lapses. */
+  /** Native username/password login (no browser). The credentials are always
+   *  kept in the secure keychain so the session renews itself unattended. */
   signInWithPassword: (
     username: string,
     password: string,
-    remember: boolean,
     helpdesccode?: string,
   ) => Promise<void>;
   /** Whether credentials are saved for automatic re-login. */
   hasSavedCredentials: boolean;
-  /** Forget saved credentials but stay signed in on the current token. */
-  disableAutoLogin: () => Promise<void>;
+  /** Set when the saved password stopped working and the user must sign in. */
+  sessionMessage: string | null;
   /** Web login step 1: returns the PZŁ authorize URL to open. */
   beginWebLogin: () => Promise<string>;
   /** Web login step 2: exchange the pasted code/URL for tokens. */
@@ -84,10 +94,19 @@ function isRevoked(err: unknown): boolean {
   return msg.includes('invalid_grant') || msg.includes('invalid grant');
 }
 
+/** headlessLogin's "landed back on the login form" — wrong or changed password. */
+function isBadCredentials(err: unknown): boolean {
+  return String((err as Error)?.message ?? '').startsWith('Logowanie nie powiodło się');
+}
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [tokens, setTokens] = useState<TokenSet | null>(null);
   const [hasSavedCredentials, setHasSavedCredentials] = useState(false);
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const tokensRef = useRef<TokenSet | null>(null);
   const credsRef = useRef<Credentials | null>(null);
   const refreshInFlight = useRef<Promise<string | null> | null>(null);
@@ -108,6 +127,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     discovery,
   );
 
+  /** Username of the account the cached data belongs to, once known. */
+  const lastUsername = useRef<string | null>(null);
+
+  const clearCachedData = useCallback(async () => {
+    queryClient.clear();
+    try {
+      await asyncStoragePersister.removeClient();
+      await AsyncStorage.removeItem(ACTIVE_UNIT_KEY);
+    } catch {
+      // Best effort; the in-memory cache is already gone.
+    }
+  }, [queryClient]);
+
   const persist = useCallback(async (t: TokenSet | null) => {
     tokensRef.current = t;
     setTokens(t);
@@ -119,38 +151,64 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     Promise.all([loadTokens(), loadCredentials()]).then(([t, c]) => {
       tokensRef.current = t;
       credsRef.current = c;
+      lastUsername.current = c?.username ?? null;
       setTokens(t);
       setHasSavedCredentials(!!c);
       setReady(true);
     });
   }, []);
 
-  /** Renew the access token. These PZŁ clients issue a ~30-day token and NO
-   *  refresh token, so renewal = a silent headless re-login with saved
-   *  credentials. Never drops the session on a network error (woods-friendly). */
+  /**
+   * Renew the access token, cheapest way first: a refresh token if this token
+   * set has one (only some login paths do), else a silent headless re-login
+   * with the saved credentials. Concurrent callers share one attempt.
+   *
+   * Never drops the session on a network error (woods-friendly): the stale
+   * token is kept and renewal is tried again later. The session ends only
+   * when renewal is impossible — no credentials and no refresh token — or
+   * the saved password is rejected twice, i.e. it was changed.
+   */
   const doRefresh = useCallback(async (): Promise<string | null> => {
+    if (refreshInFlight.current) return refreshInFlight.current;
     const current = tokensRef.current;
     const creds = credsRef.current;
     if (!creds && !current?.refreshToken) return current?.accessToken ?? null;
-    if (refreshInFlight.current) return refreshInFlight.current;
 
     refreshInFlight.current = (async () => {
       try {
-        if (creds) {
-          const next = await headlessLogin(
-            creds.username,
-            creds.password,
-            creds.helpdesccode,
-          );
-          await persist(next);
-          return next.accessToken;
+        if (current?.refreshToken) {
+          try {
+            const next = await refreshBridgeToken(current);
+            if (next) {
+              await persist(next);
+              return next.accessToken;
+            }
+          } catch (err) {
+            if (!creds) throw err;
+            // Fall through to a full login with the saved credentials.
+          }
         }
-        // Fallback for any token set that does carry a refresh token.
-        const next = await refreshBridgeToken(current!);
-        if (next) await persist(next);
-        return next?.accessToken ?? null;
+        if (!creds) return current?.accessToken ?? null;
+        let next: TokenSet;
+        try {
+          next = await headlessLogin(creds.username, creds.password, creds.helpdesccode);
+        } catch (err) {
+          if (!isBadCredentials(err)) throw err;
+          // One bounce can be the server hiccuping; two in a row is a password
+          // that no longer works.
+          await wait(BAD_CREDENTIALS_RETRY_MS);
+          next = await headlessLogin(creds.username, creds.password, creds.helpdesccode);
+        }
+        await persist(next);
+        return next.accessToken;
       } catch (err) {
-        if (isRevoked(err)) {
+        if (isBadCredentials(err) || isRevoked(err)) {
+          credsRef.current = null;
+          setHasSavedCredentials(false);
+          await clearCredentials();
+          setSessionMessage(
+            'Hasło zostało zmienione lub jest nieprawidłowe — zaloguj się ponownie.',
+          );
           await persist(null);
           return null;
         }
@@ -173,17 +231,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return doRefresh();
   }, [doRefresh]);
 
-  // Background re-login: periodic, on foreground, and on reconnect. Only does
-  // anything when we can renew unattended (saved credentials or a refresh token).
+  /**
+   * The server rejected `rejected` (HTTP 401). Renew once and hand back the new
+   * token for a single retry. If the token has already been replaced by a
+   * concurrent renewal, that one is used without logging in again. With no way
+   * to renew, the session is over and the app returns to the login screen.
+   */
+  const onUnauthorized = useCallback(
+    async (rejected: string | null): Promise<string | null> => {
+      const current = tokensRef.current;
+      if (!current) return null;
+      if (rejected && current.accessToken !== rejected) return current.accessToken;
+      if (!credsRef.current && !current.refreshToken) {
+        setSessionMessage('Sesja wygasła — zaloguj się ponownie.');
+        await persist(null);
+        return null;
+      }
+      const next = await doRefresh();
+      return next && next !== rejected ? next : null;
+    },
+    [doRefresh, persist],
+  );
+
+  useEffect(() => {
+    setUnauthorizedHandler(onUnauthorized);
+  }, [onUnauthorized]);
+
+  // Keep the token fresh while the app is open: checked every minute, on
+  // returning to the foreground and on reconnect, and renewed only when it
+  // would lapse before the next check. Requests renew on their own too
+  // (getAccessToken), so this just keeps that off the user's critical path.
   useEffect(() => {
     if (!ready) return;
     const canRenew = () => !!credsRef.current || !!tokensRef.current?.refreshToken;
 
     const maybeReauth = () => {
       const t = tokensRef.current;
-      if (!t || !canRenew() || !onlineManager.isOnline()) return;
-      const soon = !t.expiresAt || t.expiresAt - Date.now() < REAUTH_WINDOW_MS;
-      if (soon) void doRefresh();
+      if (!t?.expiresAt || !canRenew() || !onlineManager.isOnline()) return;
+      if (t.expiresAt - Date.now() < EXPIRY_SKEW_MS + BACKGROUND_CHECK_MS) {
+        void doRefresh();
+      }
     };
 
     const interval = setInterval(maybeReauth, BACKGROUND_CHECK_MS);
@@ -227,33 +314,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [request, promptAsync, redirectUri, persist]);
 
   const signInWithPassword = useCallback(
-    async (
-      username: string,
-      password: string,
-      remember: boolean,
-      helpdesccode = '',
-    ) => {
+    async (username: string, password: string, helpdesccode = '') => {
       const next = await headlessLogin(username, password, helpdesccode);
-      if (remember) {
-        const creds: Credentials = { username, password, helpdesccode };
-        credsRef.current = creds;
-        await saveCredentials(creds);
-        setHasSavedCredentials(true);
-      } else {
-        credsRef.current = null;
-        await clearCredentials();
-        setHasSavedCredentials(false);
+      // A different account must not inherit the previous one's cached data.
+      const previous = lastUsername.current ?? (await loadCredentials())?.username;
+      if (previous && previous.toLowerCase() !== username.toLowerCase()) {
+        await clearCachedData();
       }
+      // Always remembered: the session renews itself and the user never sees
+      // the login screen again unless the password changes.
+      const creds: Credentials = { username, password, helpdesccode };
+      credsRef.current = creds;
+      lastUsername.current = username;
+      await saveCredentials(creds);
+      setHasSavedCredentials(true);
+      setSessionMessage(null);
       await persist(next);
     },
-    [persist],
+    [persist, clearCachedData],
   );
-
-  const disableAutoLogin = useCallback(async () => {
-    credsRef.current = null;
-    setHasSavedCredentials(false);
-    await clearCredentials();
-  }, []);
 
   const beginWebLogin = useCallback(() => startWebLogin(), []);
 
@@ -290,10 +369,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(async () => {
     if (isDemo()) setDemo(false);
     credsRef.current = null;
+    lastUsername.current = null;
     setHasSavedCredentials(false);
+    setSessionMessage(null);
     await clearCredentials();
     await persist(null);
-  }, [persist]);
+    // Nothing of this account may outlive the sign-out: cached screens, the
+    // chosen koło, and the file that hands the session to Android Auto.
+    await clearCachedData();
+    clearCarHandoff();
+  }, [persist, clearCachedData]);
 
   const value = useMemo<AuthState>(
     () => ({
@@ -304,7 +389,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signInDemo,
       signInWithPassword,
       hasSavedCredentials,
-      disableAutoLogin,
+      sessionMessage,
       beginWebLogin,
       completeWebLogin: completeWebLoginCb,
       signInWithToken,
@@ -318,7 +403,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signInDemo,
       signInWithPassword,
       hasSavedCredentials,
-      disableAutoLogin,
+      sessionMessage,
       beginWebLogin,
       completeWebLoginCb,
       signInWithToken,

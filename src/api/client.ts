@@ -46,6 +46,19 @@ export function setTokenProvider(fn: TokenProvider) {
   tokenProvider = fn;
 }
 
+/** Given the token the server rejected, returns a renewed one (or null). */
+type UnauthorizedHandler = (rejected: string | null) => Promise<string | null>;
+
+let unauthorizedHandler: UnauthorizedHandler = async () => null;
+
+/**
+ * Wired up by AuthProvider: a 401 renews the session and the request is sent
+ * once more, so an expired token never surfaces as an error on screen.
+ */
+export function setUnauthorizedHandler(fn: UnauthorizedHandler) {
+  unauthorizedHandler = fn;
+}
+
 export type RequestOptions = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   query?: Record<string, string | number | boolean | undefined | null>;
@@ -82,6 +95,23 @@ export async function apiRequest<T = unknown>(
   }
 
   const token = await tokenProvider();
+  try {
+    return await send<T>(path, opts, token);
+  } catch (e) {
+    // 401 = the request was refused before anything happened, so resending
+    // it — writes included — cannot apply it twice.
+    if (!(e instanceof ApiError) || e.status !== 401) throw e;
+    const renewed = await unauthorizedHandler(token);
+    if (!renewed || renewed === token) throw e;
+    return send<T>(path, opts, renewed);
+  }
+}
+
+async function send<T>(
+  path: string,
+  opts: RequestOptions,
+  token: string | null,
+): Promise<T> {
   const url = buildUrl(path, opts);
 
   const headers: Record<string, string> = { Accept: 'application/json' };

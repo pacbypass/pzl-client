@@ -3,7 +3,6 @@ import { Linking, Platform, StyleSheet, View } from 'react-native';
 import { Redirect, useRouter } from 'expo-router';
 import {
   Button,
-  Checkbox,
   HelperText,
   Surface,
   Text,
@@ -23,15 +22,16 @@ export default function Login() {
     signInDemo,
     beginWebLogin,
     completeWebLogin,
+    sessionMessage,
   } = useAuth();
   const router = useRouter();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Why the user is here again, when it was not their own sign-out.
+  const [error, setError] = useState<string | null>(sessionMessage);
 
   // Native username/password state
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [remember, setRemember] = useState(true);
   const [showPass, setShowPass] = useState(false);
 
   // Web code-paste state
@@ -45,7 +45,7 @@ export default function Login() {
     setError(null);
     setBusy(true);
     try {
-      await signInWithPassword(username.trim(), password, remember);
+      await signInWithPassword(username.trim(), password);
       go();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Nie udało się zalogować');
@@ -135,20 +135,10 @@ export default function Login() {
                 />
               }
             />
-            <Checkbox.Item
-              label="Nie wylogowuj mnie (zapamiętaj dane)"
-              status={remember ? 'checked' : 'unchecked'}
-              onPress={() => setRemember((r) => !r)}
-              position="leading"
-              style={styles.checkbox}
-              labelStyle={styles.checkboxLabel}
-            />
-            {remember ? (
-              <HelperText type="info" visible style={styles.hint}>
-                Zostaniesz zalogowany na stałe — aplikacja odnawia sesję w tle,
-                także po utracie zasięgu. Dane logowania są szyfrowane na urządzeniu.
-              </HelperText>
-            ) : null}
+            <HelperText type="info" visible style={styles.hint}>
+              Zostaniesz zalogowany na stałe — aplikacja odnawia sesję w tle,
+              także po utracie zasięgu. Dane logowania są szyfrowane na urządzeniu.
+            </HelperText>
             {error ? (
               <HelperText type="error" visible>
                 {error}
@@ -261,8 +251,6 @@ const styles = StyleSheet.create({
   cardHint: { opacity: 0.7, lineHeight: 18 },
   mono: { fontFamily: 'monospace' as never },
   input: { maxHeight: 120 },
-  checkbox: { paddingHorizontal: 0, marginTop: 2 },
-  checkboxLabel: { textAlign: 'left', fontSize: 14 },
   hint: { paddingHorizontal: 0 },
   button: { marginTop: 6, borderRadius: 12 },
   divider: { height: 1, backgroundColor: 'rgba(0,0,0,0.08)', marginVertical: 8 },

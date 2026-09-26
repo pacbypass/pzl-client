@@ -110,6 +110,8 @@ export default function MapScreen() {
   const [locating, setLocating] = useState(false);
   /** Follow-me: the map keeps the user centred as they drive. */
   const [following, setFollowing] = useState(false);
+  /** Zoom following starts at: the user's own, unless too far out to drive by. */
+  const [followZoom, setFollowZoom] = useState(14);
   const [selected, setSelected] = useState<Device | null>(null);
 
   // Ask for (or read) the location permission — needed for the blue dot even
@@ -420,13 +422,6 @@ export default function MapScreen() {
       : all;
   }, [deviceTypes.data, settings.deviceTypeIds]);
 
-  // One-shot fly to the given camera: apply it, then release so the user can
-  // freely pan/zoom afterwards (a lingering target must never fight gestures).
-  const flyOnce = (cam: MapCamera) => {
-    setFlyTo(cam);
-    setTimeout(() => setFlyTo(null), 1000);
-  };
-
   /**
    * The locate button toggles follow-me: the map centres on the user and
    * keeps them centred as they move. Tapping it again — or dragging the map —
@@ -448,21 +443,11 @@ export default function MapScreen() {
           return;
         }
       }
-      // Button = force a real GPS lock (High), with a longer window.
-      const pos = await getFreshPosition(Location.Accuracy.High, 12000);
-      if (!pos) {
-        setSnack('Nie udało się ustalić lokalizacji.');
-        return;
-      }
-      // Keep the user's zoom unless it is too far out to drive by.
+      // MapLibre's tracking moves the camera to the user itself. No separate
+      // fly-in: clearing a fly-in's camera target cancels tracking at once.
       const zoom = settings.camera?.zoom ?? 0;
-      flyOnce({
-        longitude: pos.coords.longitude,
-        latitude: pos.coords.latitude,
-        zoom: zoom < 12 ? 14 : zoom,
-      });
-      // Start following once the fly-in has landed, so it lands at that zoom.
-      setTimeout(() => setFollowing(true), 900);
+      setFollowZoom(zoom < 12 ? 14 : zoom);
+      setFollowing(true);
     } catch {
       setSnack('Nie udało się ustalić lokalizacji.');
     } finally {
@@ -571,6 +556,7 @@ export default function MapScreen() {
           showUserLocation={locationGranted}
           flyTo={flyTo}
           followUser={following && locationGranted}
+          followZoom={followZoom}
           onFollowUserChange={(on) => {
             if (!on) setFollowing(false);
           }}

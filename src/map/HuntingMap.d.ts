@@ -18,6 +18,8 @@ export type HuntingMapProps = {
   highlight?: { longitude: number; latitude: number } | null;
   /** Keep the camera centred on the user as they move (follow-me). */
   followUser?: boolean;
+  /** Zoom the map goes to when following starts. */
+  followZoom?: number;
   /** Following stopped (or started) on the map's side — e.g. the user panned. */
   onFollowUserChange?: (following: boolean) => void;
 };

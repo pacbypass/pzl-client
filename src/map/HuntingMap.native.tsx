@@ -27,6 +27,8 @@ export type HuntingMapProps = {
   highlight?: { longitude: number; latitude: number } | null;
   /** Keep the camera centred on the user as they move (follow-me). */
   followUser?: boolean;
+  /** Zoom the map goes to when following starts. */
+  followZoom?: number;
   /** Following stopped (or started) on the map's side — e.g. the user panned. */
   onFollowUserChange?: (following: boolean) => void;
 };
@@ -42,6 +44,7 @@ export function HuntingMap({
   onMapPress,
   highlight,
   followUser,
+  followZoom,
   onFollowUserChange,
 }: HuntingMapProps) {
   const highlightShape = useMemo<GeoJSON.FeatureCollection>(
@@ -112,6 +115,7 @@ export function HuntingMap({
         // reported back so the button can switch off.
         followUserLocation={!!followUser}
         followUserMode={UserTrackingMode.Follow}
+        followZoomLevel={followUser ? followZoom : undefined}
         onUserTrackingModeChange={(e) =>
           onFollowUserChange?.(e.nativeEvent.payload.followUserLocation)
         }

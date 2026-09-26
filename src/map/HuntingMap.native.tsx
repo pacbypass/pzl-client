@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo } from 'react';
 import { StyleSheet } from 'react-native';
 import {
   Camera,
@@ -70,10 +70,7 @@ export function HuntingMap({
   // bug after using locate.) Only depends on the raster keys, which change
   // rarely (base-layer toggle).
   const style = useMemo(() => buildMapStyle(activeRasterKeys, []), [activeRasterKeys]);
-  // Only the FIRST camera: the screen saves every camera move back into
-  // `initialCamera`, and a changing default made MapLibre re-apply it —
-  // which, among other things, cancelled follow-me the moment it moved.
-  const cam = useRef(initialCamera ?? POLAND_CENTER).current;
+  const cam = initialCamera ?? POLAND_CENTER;
 
   return (
     <MapView

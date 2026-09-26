@@ -64,6 +64,36 @@ class CarMapSession(
 
     fun pushLocation() {
         chrome.updateLocation(location.current, location.accuracy, location.ageMs())
+        // A stale fix is not followed: the map would sit on where the car was.
+        val at = location.current
+        if (renderer.following && at != null && location.ageMs() <= CarLocation.STALE_FIX_MS) {
+            renderer.followTo(at)
+        }
+    }
+
+    /**
+     * The locate button: start following the driver (centring on them now),
+     * or stop when already following. Dragging the map also stops it.
+     */
+    fun toggleFollow() {
+        if (renderer.following) {
+            renderer.following = false
+            renderer.redraw()
+            return
+        }
+        val at = location.current
+        if (at == null) {
+            Log.i(TAG, "follow: no fix yet")
+            return
+        }
+        renderer.following = true
+        // Keep the driver's zoom unless the map is zoomed out too far to drive by.
+        val zoom = renderer.camera().zoom.let { if (it < 12.0) 14.0 else it }
+        renderer.setCamera(at, zoom)
+    }
+
+    init {
+        renderer.onFollowEnded = { renderer.redraw() }
     }
 
     /** Map on screen: timers run. */

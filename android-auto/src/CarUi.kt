@@ -172,16 +172,25 @@ class CarUi {
     }
 
     /** Round contained button, like the map screen's FABs. */
-    fun fab(canvas: Canvas, cx: Float, cy: Float, icon: Icon, onTap: () -> Unit) {
+    /** Round map button; `active` fills it green, for a mode that is on. */
+    fun fab(
+        canvas: Canvas,
+        cx: Float,
+        cy: Float,
+        icon: Icon,
+        active: Boolean = false,
+        onTap: () -> Unit,
+    ) {
         val r = dp(22f)
         shadow(canvas, RectF(cx - r, cy - r, cx + r, cy + r), r)
-        fill.color = CarTheme.greenSurface
+        fill.color = if (active) CarTheme.green else CarTheme.greenSurface
         canvas.drawCircle(cx, cy, r, fill)
+        val ink = if (active) Color.WHITE else CarTheme.green
         when (icon) {
-            Icon.LAYERS -> iconLayers(canvas, cx, cy, r * 0.55f, CarTheme.green)
-            Icon.LOCATE -> iconLocate(canvas, cx, cy, r * 0.55f, CarTheme.green)
-            Icon.CLOSE -> iconClose(canvas, cx, cy, r * 0.5f, CarTheme.green)
-            Icon.REFRESH -> iconRefresh(canvas, cx, cy, r * 0.55f, CarTheme.green)
+            Icon.LAYERS -> iconLayers(canvas, cx, cy, r * 0.55f, ink)
+            Icon.LOCATE -> iconLocate(canvas, cx, cy, r * 0.55f, ink)
+            Icon.CLOSE -> iconClose(canvas, cx, cy, r * 0.5f, ink)
+            Icon.REFRESH -> iconRefresh(canvas, cx, cy, r * 0.55f, ink)
         }
         hotspot(RectF(cx - r, cy - r, cx + r, cy + r), onTap)
     }

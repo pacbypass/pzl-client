@@ -62,6 +62,8 @@ class CarMapRenderer(private val context: Context) {
         private const val CONTEXT_ZOOM_OUT = 2.0
         /** Quiet time after a drag before a fresh render starts. */
         private const val DRAG_SETTLE_MS = 250L
+        /** While following, re-render at most this often (unless near the edge). */
+        private const val FOLLOW_RENDER_MS = 2_500L
     }
 
     /** Size of the rendered bitmap (surface size × OVERSCAN). */
@@ -401,6 +403,11 @@ class CarMapRenderer(private val context: Context) {
      * moment — or straight away when the drag is about to run off the frame.
      */
     fun onDrag(dx: Float, dy: Float) {
+        // Dragging the map away is how following ends, as on the phone.
+        if (following) {
+            following = false
+            onFollowEnded?.invoke()
+        }
         val view = view() ?: return
         val target = view.latLngAt(width / 2f - dx, height / 2f - dy) ?: return
         camera = CameraPosition.Builder().target(target).zoom(camera.zoom).build()
@@ -416,6 +423,32 @@ class CarMapRenderer(private val context: Context) {
 
     /** Kept for callers that report the end of a drag; the render is already due. */
     fun onDragEnd() = scheduleRender(0)
+
+    /**
+     * Follow mode: the view stays centred on the driver. Set by the session;
+     * a drag ends it (and reports so), a pinch zooms about the driver.
+     */
+    var following = false
+    var onFollowEnded: (() -> Unit)? = null
+
+    /**
+     * Keep the driver in the middle while following. The camera moves at once
+     * (the frame in hand slides under it), and a fresh render follows at most
+     * every couple of seconds — at driving speed the frame's margin lasts far
+     * longer than that — or straight away when the view nears its edge.
+     */
+    fun followTo(target: LatLng) {
+        val current = camera.target
+        if (current != null && current.latitude == target.latitude &&
+            current.longitude == target.longitude
+        ) {
+            return
+        }
+        camera = CameraPosition.Builder().target(target).zoom(camera.zoom).build()
+        redrawLastFrame()
+        val edge = view().let { it == null || it.nearEdge() }
+        scheduleRender(if (edge) 0 else FOLLOW_RENDER_MS, postpone = false)
+    }
 
     private val renderSoon = Runnable {
         renderDueAt = 0L
@@ -447,8 +480,9 @@ class CarMapRenderer(private val context: Context) {
      */
     fun onZoomAt(focusX: Float, focusY: Float, factor: Float) {
         if (factor <= 0f || factor.isNaN()) return
-        val fx = if (focusX < 0f || focusX > width) width / 2f else focusX
-        val fy = if (focusY < 0f || focusY > height) height / 2f else focusY
+        // While following, zoom about the driver (the middle) so they stay put.
+        val fx = if (following || focusX < 0f || focusX > width) width / 2f else focusX
+        val fy = if (following || focusY < 0f || focusY > height) height / 2f else focusY
         val zoom = (camera.zoom + Math.log(factor.toDouble()) / Math.log(2.0))
             .coerceIn(MIN_ZOOM, MAX_ZOOM)
         val view = view()

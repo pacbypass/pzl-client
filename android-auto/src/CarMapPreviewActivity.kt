@@ -46,7 +46,7 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
             this,
             renderer,
             onRefresh = { session.refresh() },
-            onLocate = { location.current?.let { renderer.setCamera(it, 14.0) } },
+            onLocate = { session.toggleFollow() },
             showRefresh = true,
         )
         session = CarMapSession(this, renderer, chrome, location)

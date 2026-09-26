@@ -16,6 +16,10 @@ export type HuntingMapProps = {
   onMapPress?: (coord: { longitude: number; latitude: number }) => void;
   /** Coordinate of the currently-selected device, highlighted with a ring. */
   highlight?: { longitude: number; latitude: number } | null;
+  /** Keep the camera centred on the user as they move (follow-me). */
+  followUser?: boolean;
+  /** Following stopped (or started) on the map's side — e.g. the user panned. */
+  onFollowUserChange?: (following: boolean) => void;
 };
 
 export declare function HuntingMap(props: HuntingMapProps): React.ReactElement;

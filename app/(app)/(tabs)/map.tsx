@@ -108,6 +108,8 @@ export default function MapScreen() {
   const [locationGranted, setLocationGranted] = useState(false);
   const [flyTo, setFlyTo] = useState<MapCamera | null>(null);
   const [locating, setLocating] = useState(false);
+  /** Follow-me: the map keeps the user centred as they drive. */
+  const [following, setFollowing] = useState(false);
   const [selected, setSelected] = useState<Device | null>(null);
 
   // Ask for (or read) the location permission — needed for the blue dot even
@@ -425,7 +427,16 @@ export default function MapScreen() {
     setTimeout(() => setFlyTo(null), 1000);
   };
 
+  /**
+   * The locate button toggles follow-me: the map centres on the user and
+   * keeps them centred as they move. Tapping it again — or dragging the map —
+   * stops following.
+   */
   const onLocate = async () => {
+    if (following) {
+      setFollowing(false);
+      return;
+    }
     if (locating) return; // ignore taps while a fix is in flight (no queueing)
     setLocating(true);
     try {
@@ -443,7 +454,15 @@ export default function MapScreen() {
         setSnack('Nie udało się ustalić lokalizacji.');
         return;
       }
-      flyOnce({ longitude: pos.coords.longitude, latitude: pos.coords.latitude, zoom: 14 });
+      // Keep the user's zoom unless it is too far out to drive by.
+      const zoom = settings.camera?.zoom ?? 0;
+      flyOnce({
+        longitude: pos.coords.longitude,
+        latitude: pos.coords.latitude,
+        zoom: zoom < 12 ? 14 : zoom,
+      });
+      // Start following once the fly-in has landed, so it lands at that zoom.
+      setTimeout(() => setFollowing(true), 900);
     } catch {
       setSnack('Nie udało się ustalić lokalizacji.');
     } finally {
@@ -551,6 +570,10 @@ export default function MapScreen() {
           onCameraChange={(camera) => update({ camera })}
           showUserLocation={locationGranted}
           flyTo={flyTo}
+          followUser={following && locationGranted}
+          onFollowUserChange={(on) => {
+            if (!on) setFollowing(false);
+          }}
           onMapPress={onMapPress}
           highlight={
             selected?.marker?.coordinates?.length === 2
@@ -566,7 +589,19 @@ export default function MapScreen() {
 
         <View style={styles.topRight} pointerEvents="box-none">
           <IconButton icon="layers" mode="contained" size={24} onPress={() => setPanelOpen((o) => !o)} style={styles.fab} />
-          <IconButton icon="crosshairs-gps" mode="contained" size={24} loading={locating} disabled={locating} onPress={onLocate} style={styles.fab} />
+          <IconButton
+            icon={following ? 'navigation' : 'crosshairs-gps'}
+            mode="contained"
+            size={24}
+            loading={locating}
+            disabled={locating}
+            onPress={onLocate}
+            // Filled green while following, so it is clear the map will move.
+            containerColor={following ? theme.colors.primary : undefined}
+            iconColor={following ? theme.colors.onPrimary : undefined}
+            accessibilityLabel={following ? 'Przestań śledzić lokalizację' : 'Śledź moją lokalizację'}
+            style={styles.fab}
+          />
         </View>
 
         {settings.showDevices && legendTypes.length ? (

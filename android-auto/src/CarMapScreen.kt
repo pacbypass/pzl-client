@@ -61,15 +61,8 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
         renderer.detach()
     }
 
-    /** The crosshair button: go to the driver, like the phone's locate FAB. */
-    private fun centreOnMe() {
-        val at = location.current
-        if (at == null) {
-            android.util.Log.i(TAG, "locate: no fix yet")
-            return
-        }
-        renderer.setCamera(at, 14.0)
-    }
+    /** The crosshair button: follow the driver as they drive (tap again to stop). */
+    private fun centreOnMe() = session.toggleFollow()
 
     // ---- surface ---------------------------------------------------------
 

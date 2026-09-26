@@ -166,7 +166,11 @@ class CarMapChrome(
             selectedDevice = null
             renderer.setHighlight(null)
         }
-        ui.fab(canvas, w - ui.dp(34f), barBottom + ui.dp(128f), CarUi.Icon.LOCATE) {
+        // Follow-me: filled while the map follows the driver.
+        ui.fab(
+            canvas, w - ui.dp(34f), barBottom + ui.dp(128f), CarUi.Icon.LOCATE,
+            active = renderer.following,
+        ) {
             onLocate?.invoke()
         }
 

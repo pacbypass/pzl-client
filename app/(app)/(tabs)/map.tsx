@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { useOnForeground } from '@/hooks/useOnForeground';
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { ScrollView, StyleSheet, View, type GestureResponderEvent } from 'react-native';
 import * as Location from 'expo-location';
 import {
   Appbar,
@@ -116,8 +116,8 @@ export default function MapScreen() {
     latitude: number;
     zoom?: number;
   } | null>(null);
-  /** When a hand gesture began (0 = none): fixes must not pull the camera back
-   *  mid-drag. Expires on its own in case the gesture's end is never reported. */
+  /** When a pinch began (0 = none): fixes wait so they do not fight the zoom.
+   *  Expires on its own in case the fingers' lift is never reported. */
   const gestureRef = useRef(0);
 
   // While following, watch the position and move the camera with every fix.
@@ -161,20 +161,34 @@ export default function MapScreen() {
   }, [following]);
 
   /**
-   * A hand-made camera move ends follow-me when it moved the map off the user
-   * (a pan) — a pinch leaves the user near the middle and keeps following.
+   * Touches on the map decide what a hand gesture means for follow-me: one
+   * finger dragging is a pan and ends following at once; two fingers is a
+   * pinch, which keeps following (fixes wait until the fingers lift, so they
+   * do not fight the zoom). The map's own region events could not tell these
+   * apart reliably, and a fix landing mid-drag pulled the map back.
    */
-  const onUserMove = (camera: MapCamera) => {
-    gestureRef.current = 0;
-    if (!following || !trackTo) return;
-    const metresPerPixel =
-      (156543.03 * Math.cos((camera.latitude * Math.PI) / 180)) / Math.pow(2, camera.zoom);
-    const dx =
-      (camera.longitude - trackTo.longitude) *
-      111_320 *
-      Math.cos((camera.latitude * Math.PI) / 180);
-    const dy = (camera.latitude - trackTo.latitude) * 110_540;
-    if (Math.hypot(dx, dy) / metresPerPixel > 80) setFollowing(false);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const onMapTouchStart = (e: GestureResponderEvent) => {
+    const t = e.nativeEvent.touches;
+    touchStart.current = t.length === 1 ? { x: t[0].pageX, y: t[0].pageY } : null;
+    if (following) gestureRef.current = Date.now();
+  };
+  const onMapTouchMove = (e: GestureResponderEvent) => {
+    const t = e.nativeEvent.touches;
+    if (!following) return;
+    if (t.length > 1) {
+      touchStart.current = null; // a pinch, not a pan
+      gestureRef.current = Date.now();
+      return;
+    }
+    const s = touchStart.current;
+    if (s && Math.hypot(t[0].pageX - s.x, t[0].pageY - s.y) > 12) setFollowing(false);
+  };
+  const onMapTouchEnd = (e: GestureResponderEvent) => {
+    if (e.nativeEvent.touches.length === 0) {
+      touchStart.current = null;
+      gestureRef.current = 0;
+    }
   };
   const [selected, setSelected] = useState<Device | null>(null);
 
@@ -608,30 +622,34 @@ export default function MapScreen() {
       </Appbar.Header>
 
       <View style={styles.mapArea}>
-        <HuntingMap
-          activeRasterKeys={activeRasterKeys}
-          vectorOverlays={vectorOverlays}
-          initialCamera={settings.camera}
-          onCameraChange={(camera) => update({ camera })}
-          showUserLocation={locationGranted}
-          flyTo={flyTo}
-          trackTo={following ? trackTo : null}
-          onUserMoveStart={() => {
-            gestureRef.current = Date.now();
-          }}
-          onUserMove={onUserMove}
-          onMapPress={onMapPress}
-          highlight={
-            selected?.marker?.coordinates?.length === 2
-              ? {
-                  longitude: selected.marker.coordinates[0],
-                  latitude: selected.marker.coordinates[1],
-                }
-              : selectedMarker
-                ? { longitude: selectedMarker.longitude, latitude: selectedMarker.latitude }
-                : null
-          }
-        />
+        <View
+          style={styles.mapArea}
+          onTouchStart={onMapTouchStart}
+          onTouchMove={onMapTouchMove}
+          onTouchEnd={onMapTouchEnd}
+          onTouchCancel={onMapTouchEnd}
+        >
+          <HuntingMap
+            activeRasterKeys={activeRasterKeys}
+            vectorOverlays={vectorOverlays}
+            initialCamera={settings.camera}
+            onCameraChange={(camera) => update({ camera })}
+            showUserLocation={locationGranted}
+            flyTo={flyTo}
+            trackTo={following ? trackTo : null}
+            onMapPress={onMapPress}
+            highlight={
+              selected?.marker?.coordinates?.length === 2
+                ? {
+                    longitude: selected.marker.coordinates[0],
+                    latitude: selected.marker.coordinates[1],
+                  }
+                : selectedMarker
+                  ? { longitude: selectedMarker.longitude, latitude: selectedMarker.latitude }
+                  : null
+            }
+          />
+        </View>
 
         <View style={styles.topRight} pointerEvents="box-none">
           <IconButton icon="layers" mode="contained" size={24} onPress={() => setPanelOpen((o) => !o)} style={styles.fab} />

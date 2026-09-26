@@ -25,8 +25,6 @@ export type HuntingMapProps = {
   /** Coordinate of the currently-selected device, highlighted with a ring. */
   highlight?: { longitude: number; latitude: number } | null;
   trackTo?: { longitude: number; latitude: number; zoom?: number } | null;
-  onUserMoveStart?: () => void;
-  onUserMove?: (camera: MapCamera) => void;
 };
 
 /** Native map via @maplibre/maplibre-react-native (v10, named exports). */
@@ -40,8 +38,6 @@ export function HuntingMap({
   onMapPress,
   highlight,
   trackTo,
-  onUserMoveStart,
-  onUserMove,
 }: HuntingMapProps) {
   const highlightShape = useMemo<GeoJSON.FeatureCollection>(
     () => ({
@@ -83,14 +79,13 @@ export function HuntingMap({
           onMapPress?.({ longitude, latitude });
         }
       }}
-      onRegionWillChange={(feature) => {
-        if (feature.properties.isUserInteraction) onUserMoveStart?.();
-      }}
       onRegionDidChange={(feature) => {
         const [longitude, latitude] = feature.geometry.coordinates;
-        const camera = { longitude, latitude, zoom: feature.properties.zoomLevel };
-        onCameraChange?.(camera);
-        if (feature.properties.isUserInteraction) onUserMove?.(camera);
+        onCameraChange?.({
+          longitude,
+          latitude,
+          zoom: feature.properties.zoomLevel,
+        });
       }}
     >
       {/* Declarative camera. When `flyTo` is set the camera animates to it; when

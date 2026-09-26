@@ -553,12 +553,28 @@ class CarMapRenderer(private val context: Context) {
             status = null
             lastSnapshot = snapshot
             lastBitmap = snapshot.bitmap
-            snapZoom = rendering.zoom
+            // Read the zoom off the frame itself rather than trusting the
+            // request: a render started straight after another can come back
+            // at once with the PREVIOUS camera, and drawing that as the new
+            // zoom put the map somewhere else entirely.
+            snapZoom = zoomOf(snapshot)
+            val centre = snapshot.pixelForLatLng(rendering.target ?: FALLBACK)
+            val stale = Math.abs(snapZoom - rendering.zoom) > 0.02 ||
+                Math.abs(centre.x - snapshot.bitmap.width / 2f) > 2f ||
+                Math.abs(centre.y - snapshot.bitmap.height / 2f) > 2f
             Log.i(
                 TAG,
                 "snapshot ready ${snapshot.bitmap.width}x${snapshot.bitmap.height} " +
-                    "in ${android.os.SystemClock.uptimeMillis() - startedAt}ms",
+                    "in ${android.os.SystemClock.uptimeMillis() - startedAt}ms " +
+                    "zoom ${"%.2f".format(snapZoom)}/${"%.2f".format(rendering.zoom)}" +
+                    if (stale) " STALE" else "",
             )
+            if (stale && staleRetries < 3) {
+                staleRetries++
+                snapshotQueued = true
+            } else if (!stale) {
+                staleRetries = 0
+            }
             // Drawn against the camera as it is NOW, which may have moved on
             // while this rendered; the frame lands where it belongs.
             redrawLastFrame()
@@ -592,6 +608,23 @@ class CarMapRenderer(private val context: Context) {
         })
     }
 
+    private var staleRetries = 0
+
+    /**
+     * Zoom a frame was actually rendered at, from its own projection: the
+     * world is 512 × 2^zoom pixels wide, so a known pixel span and the
+     * longitude it covers give the zoom.
+     */
+    private fun zoomOf(snapshot: MapSnapshot): Double {
+        val y = snapshot.bitmap.height / 2f
+        val span = snapshot.bitmap.width / 2f
+        val a = snapshot.latLngForPixel(PointF(snapshot.bitmap.width / 4f, y))
+        val b = snapshot.latLngForPixel(PointF(snapshot.bitmap.width / 4f + span, y))
+        val degrees = Math.abs(b.longitude - a.longitude)
+        if (degrees <= 0.0 || degrees.isNaN()) return camera.zoom
+        return Math.log(360.0 * span / (degrees * 512.0)) / Math.log(2.0)
+    }
+
     private fun contextCamera(): CameraPosition = CameraPosition.Builder()
         .target(camera.target ?: FALLBACK)
         .zoom((camera.zoom - CONTEXT_ZOOM_OUT).coerceAtLeast(0.0))
@@ -616,7 +649,7 @@ class CarMapRenderer(private val context: Context) {
         ctx.start({ snapshot ->
             contextInFlight = false
             contextSnapshot = snapshot
-            contextZoom = wanted.zoom
+            contextZoom = zoomOf(snapshot)
             redrawLastFrame()
         }, { error ->
             // Only a backdrop: the detailed frame reports what matters.

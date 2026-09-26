@@ -157,10 +157,19 @@ export default function HuntingSignup() {
     [permitsQuery.data, district],
   );
 
-  // Reset the permit selection when the obwód OR the booked hunter changes.
+  // Reset the permit selection when the obwód, the booked hunter, or who is
+  // being signed up (me / another hunter) changes: the permits on offer are
+  // someone else's then.
   useEffect(() => {
     setPermitIds([]);
-  }, [district?.id, hunter?.id]);
+  }, [district?.id, hunter?.id, mode]);
+
+  // Only permits actually on offer can be sent — never one left ticked from
+  // a list that is no longer shown.
+  const selectedPermitIds = useMemo(
+    () => permitIds.filter((id) => permitsForDistrict.some((p) => p.id === id)),
+    [permitIds, permitsForDistrict],
+  );
 
   // Reset rewir when the obwód changes.
   useEffect(() => {
@@ -190,7 +199,7 @@ export default function HuntingSignup() {
 
   const canSubmit =
     !!district &&
-    permitIds.length > 0 &&
+    selectedPermitIds.length > 0 &&
     !!rewir &&
     !!hunterId &&
     !dateError;
@@ -206,8 +215,8 @@ export default function HuntingSignup() {
         hunterName: mode === 'other' ? hunter?.label : 'Ja',
         huntingDistrictId: district.id,
         huntingDistrictName: district.label,
-        permitIds,
-        permitLabel: permitsForDistrict.find((p) => p.id === permitIds[0])?.number,
+        permitIds: selectedPermitIds,
+        permitLabel: permitsForDistrict.find((p) => p.id === selectedPermitIds[0])?.number,
         huntingGroundIds: [Number(rewir.id)],
         huntingPlaceName: rewir.label,
         startTimestamp: start.toISOString(),

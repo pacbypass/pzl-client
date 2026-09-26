@@ -87,6 +87,25 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
                 android.util.Log.i("CarMapPreview", "pinch settled at zoom ${renderer.camera().zoom}")
             }, 4500L)
         }
+        if (intent.getBooleanExtra("restyletest", false)) {
+            // --ez restyletest true: swap the style for one without the taken
+            // rewiry, then back — what a change in occupancy does — and check
+            // the frame follows without a renderer rebuild.
+            val handler = android.os.Handler(android.os.Looper.getMainLooper())
+            handler.postDelayed({
+                val full = session.data.styleJson
+                val bare = org.json.JSONObject(full).apply {
+                    optJSONObject("sources")?.optJSONObject("geo-rewirs-occupied")
+                        ?.optJSONObject("data")?.put("features", org.json.JSONArray())
+                }.toString()
+                android.util.Log.i("CarMapPreview", "restyle: occupied areas removed")
+                renderer.setStyle(bare)
+                handler.postDelayed({
+                    android.util.Log.i("CarMapPreview", "restyle: occupied areas back")
+                    renderer.setStyle(full)
+                }, 5000L)
+            }, 6000L)
+        }
         val w = intent.getIntExtra("w", 0)
         val h = intent.getIntExtra("h", 0)
         if (w > 0 && h > 0) {

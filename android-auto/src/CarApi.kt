@@ -39,11 +39,39 @@ object CarApi {
      * in cloud backup).
      */
     private var renewed: String? = null
+    private var renewedLoaded = false
     private const val RENEWED_FILE = "car-token.txt"
+    /** A token this close to expiry is treated as already gone. */
+    private const val EXPIRY_MARGIN_MS = 30_000L
+    private const val SESSION_GONE = "Sesja wygasła — zaloguj się w aplikacji na telefonie"
+
+    /**
+     * The parsed `api` block, and the file state it was parsed from. The book
+     * view asks for this on every frame and the location readout on every fix;
+     * re-reading and parsing a several-hundred-KB file each time made the book
+     * stutter, so it is only parsed again when the file changes.
+     */
+    private var cached: Access? = null
+    private var cachedStamp: Pair<Long, Long>? = null
+    /** The phone's published token, before a renewed one is chosen over it. */
+    private var phoneToken: String? = null
+    private var phoneExpiresAt: Long = 0L
 
     fun access(context: Context): Access? {
+        val f = CarMapStore.file(context)
+        val stamp = f.lastModified() to f.length()
+        synchronized(this) {
+            if (stamp != cachedStamp) {
+                cached = parseAccess(f)
+                cachedStamp = stamp
+            }
+            val base = cached ?: return null
+            return base.copy(token = pickToken(context))
+        }
+    }
+
+    private fun parseAccess(f: java.io.File): Access? {
         val root = try {
-            val f = CarMapStore.file(context)
             if (!f.exists()) return null
             JSONObject(f.readText()).optJSONObject("api") ?: return null
         } catch (e: Exception) {
@@ -52,6 +80,9 @@ object CarApi {
         }
         val token = root.optString("token").takeIf { it.isNotBlank() && it != "null" }
             ?: return null
+        phoneToken = token
+        phoneExpiresAt = root.optLong("expiresAt", 0L).takeIf { it > 0 }
+            ?: (jwtExpiry(token) ?: 0L)
         val unitId = root.optString("unitId").takeIf { it.isNotBlank() && it != "null" }
             ?: return null
         val year = root.optInt("year").takeIf { it > 0 } ?: return null
@@ -64,8 +95,7 @@ object CarApi {
         }
         return Access(
             baseUrl = root.optString("baseUrl").ifBlank { "https://api.systemkl2.pzlow.pl" },
-            // A token this session renewed wins over the phone's published one.
-            token = renewed ?: readRenewed(context) ?: token,
+            token = token,
             unitId = unitId,
             year = year,
             districts = districts,
@@ -82,6 +112,93 @@ object CarApi {
             },
         )
     }
+
+    /**
+     * Which token to send: whichever of the phone's and the car's own renewed
+     * one lives longer. The renewed one used to win outright, forever — so
+     * once the car had signed in, a fresh token from the phone was ignored,
+     * every expiry cost a full login, and a phone signed into ANOTHER account
+     * was never followed. A renewed token for a different user than the
+     * phone's is dropped. Caller holds the lock.
+     */
+    private fun pickToken(context: Context): String {
+        val phone = phoneToken ?: ""
+        if (!renewedLoaded) {
+            renewed = readRenewed(context)
+            renewedLoaded = true
+        }
+        val mine = renewed
+        if (mine == null || mine == phone) return phone
+        val mineSub = subjectOf(mine)
+        val phoneSub = subjectOf(phone)
+        if (mineSub != null && phoneSub != null && mineSub != phoneSub) {
+            Log.i(TAG, "phone is signed in as someone else; dropping the car's own token")
+            renewed = null
+            deleteRenewed(context)
+            return phone
+        }
+        val mineExp = jwtExpiry(mine) ?: 0L
+        return if (mineExp > phoneExpiresAt) mine else phone
+    }
+
+    private fun alive(expiresAt: Long) =
+        expiresAt == 0L || expiresAt - EXPIRY_MARGIN_MS > System.currentTimeMillis()
+
+    /** `exp` of a JWT access token, in ms, or null when it is not a JWT. */
+    private fun jwtExpiry(token: String): Long? =
+        claims(token)?.optLong("exp", 0L)?.takeIf { it > 0 }?.let { it * 1000 }
+
+    private fun subjectOf(token: String): String? =
+        claims(token)?.optString("sub")?.takeIf { it.isNotBlank() }
+
+    private fun claims(token: String): JSONObject? = try {
+        token.split('.').getOrNull(1)?.let {
+            val flags = android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or
+                android.util.Base64.NO_WRAP
+            JSONObject(String(android.util.Base64.decode(it, flags)))
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * GET with the session handled: on a 401, first the other token on hand
+     * (the phone's, when the car's own was sent), and only then a fresh
+     * sign-in. Never surfaces a bare "401" to the driver.
+     */
+    internal fun getAuthed(context: Context, access: Access, url: String): String {
+        try {
+            return get(url, access.token)
+        } catch (e: Unauthorized) {
+            val phone = synchronized(this) { phoneToken?.takeIf { alive(phoneExpiresAt) } }
+            if (phone != null && phone != access.token) {
+                try {
+                    val body = get(url, phone)
+                    // The phone's token works and ours does not: stop using ours.
+                    synchronized(this) {
+                        if (renewed == access.token) {
+                            renewed = null
+                            deleteRenewed(context)
+                        }
+                    }
+                    return body
+                } catch (again: Unauthorized) {
+                    // fall through to a sign-in
+                }
+            }
+            // The token has aged out (they last ~25 minutes). Sign in again
+            // here rather than telling a driver to pick up their phone.
+            val fresh = signIn(context, access) ?: throw IllegalStateException(SESSION_GONE)
+            try {
+                return get(url, fresh)
+            } catch (again: Unauthorized) {
+                throw IllegalStateException(SESSION_GONE)
+            }
+        }
+    }
+
+    /** Runs network work on the car's IO thread. */
+    internal fun background(block: () -> Unit) = io.execute(block)
 
     /** Dev harness only: prove the car can sign in on its own, without waiting
      *  ~25 minutes for the published token to expire. */
@@ -142,21 +259,7 @@ object CarApi {
         }
         io.execute {
             try {
-                val url = "${access.baseUrl}/units/${access.unitId}/hunting-districts/" +
-                    "$districtId/huntings?year=${access.year}&page=$page" +
-                    "&itemsPerPage=$PAGE_SIZE"
-                val body = try {
-                    get(url, access.token)
-                } catch (e: Unauthorized) {
-                    // The token has aged out (they last ~25 minutes). Sign in
-                    // again here rather than telling a driver to pick up their
-                    // phone.
-                    val fresh = signIn(context, access)
-                        ?: throw IllegalStateException(
-                            "Sesja wygasła — zaloguj się w aplikacji na telefonie",
-                        )
-                    get(url, fresh)
-                }
+                val body = getAuthed(context, access, bookUrl(access, districtId, page))
                 val root = JSONObject(body)
                 val arr = root.optJSONArray("result") ?: JSONArray()
                 val total = root.optInt("total", arr.length())
@@ -177,6 +280,22 @@ object CarApi {
             }
         }
     }
+
+    private fun bookUrl(access: Access, districtId: String, page: Int) =
+        "${access.baseUrl}/units/${access.unitId}/hunting-districts/" +
+            "$districtId/huntings?year=${access.year}&page=$page&itemsPerPage=$PAGE_SIZE"
+
+    /**
+     * One raw book page, for callers already on the IO thread (occupancy). The
+     * page is cached exactly as `book` caches it, since it is the same data.
+     */
+    internal fun bookPageBlocking(context: Context, access: Access, districtId: String, page: Int): JSONObject {
+        val body = getAuthed(context, access, bookUrl(access, districtId, page))
+        writeCache(context, districtId, page, body)
+        return JSONObject(body)
+    }
+
+    internal const val BOOK_PAGE_SIZE = PAGE_SIZE
 
     // ---- offline copy ----------------------------------------------------
 
@@ -212,19 +331,40 @@ object CarApi {
         null
     }
 
-    private class Unauthorized : Exception("401")
+    private class Unauthorized : Exception("Brak autoryzacji")
 
     /**
      * Sign in with the credentials the phone published. Serialised so a burst
      * of 401s cannot start several logins at once.
      */
-    @Synchronized
     private fun signIn(context: Context, access: Access): String? {
-        val creds = access.credentials ?: return null
-        val token = CarAuth.login(creds) ?: return null
-        renewed = token
-        writeRenewed(context, token)
-        return token
+        // Its own lock, NOT the one `access()` takes: a login is several
+        // seconds of network, and the main thread asks for access every frame.
+        synchronized(signInLock) {
+            // Another request may have signed in while this one waited.
+            val current = synchronized(this) { renewed }
+            if (current != null && current != access.token && alive(jwtExpiry(current) ?: 0L)) {
+                return current
+            }
+            val creds = access.credentials ?: return null
+            val token = CarAuth.login(creds) ?: return null
+            synchronized(this) {
+                renewed = token
+                renewedLoaded = true
+            }
+            writeRenewed(context, token)
+            return token
+        }
+    }
+
+    private val signInLock = Any()
+
+    private fun deleteRenewed(context: Context) {
+        try {
+            java.io.File(context.filesDir, RENEWED_FILE).delete()
+        } catch (e: Exception) {
+            Log.w(TAG, "could not drop renewed token", e)
+        }
     }
 
     private fun readRenewed(context: Context): String? = try {
@@ -270,7 +410,7 @@ object CarApi {
         val status = when {
             crossed -> Status.CROSSED
             checkout != null || o.optBoolean("isEnded", false) -> Status.CLOSED
-            end != null && parseTime(end) in 1..<System.currentTimeMillis() -> Status.OVERDUE
+            end != null && CarTime.parse(end) in 1..<System.currentTimeMillis() -> Status.OVERDUE
             else -> Status.ACTIVE
         }
         // The list endpoint returns `animals` as a comma-joined string.
@@ -293,14 +433,6 @@ object CarApi {
         )
     }
 
-    private fun parseTime(iso: String): Long = try {
-        java.time.Instant.parse(
-            if (iso.endsWith("Z") || iso.contains('+')) iso else iso + "Z",
-        ).toEpochMilli()
-    } catch (e: Exception) {
-        0L
-    }
-
-    private fun main(block: () -> Unit) =
+    internal fun main(block: () -> Unit) =
         android.os.Handler(android.os.Looper.getMainLooper()).post(block)
 }

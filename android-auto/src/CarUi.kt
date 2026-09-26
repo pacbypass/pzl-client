@@ -86,6 +86,14 @@ class CarUi {
 
     private fun hotspot(rect: RectF, onTap: () -> Unit) = hotspots.add(Hotspot(rect, onTap))
 
+    /**
+     * Make a drawn surface (a card, a readout) solid to taps: a tap on its
+     * body does nothing instead of falling through to the map underneath,
+     * where it closed the card or picked a pin hidden behind it. Call right
+     * after drawing it, so its own buttons (drawn later) still win.
+     */
+    fun block(rect: RectF) = hotspot(RectF(rect)) {}
+
     // ---- primitives ------------------------------------------------------
 
     private fun shadow(canvas: Canvas, rect: RectF, radius: Float) {

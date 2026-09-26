@@ -26,10 +26,19 @@ class CarLocation(private val context: Context) : LocationListener {
     /** Metres of uncertainty on the current fix, for the accuracy ring. */
     var accuracy: Float = 0f
         private set
-    /** When that fix arrived, so a stale dot can be shown as stale. */
-    var fixedAt: Long = 0L
-        private set
     var onUpdate: (() -> Unit)? = null
+
+    /**
+     * How old the current fix is, in ms, measured from when the fix was TAKEN
+     * (its elapsed-realtime stamp), not when it reached us: the last-known fix
+     * a provider hands over at start can be hours old, and stamping it "now"
+     * showed it as live. Long.MAX_VALUE when there is no fix.
+     */
+    fun ageMs(): Long {
+        val fix = lastFix ?: return Long.MAX_VALUE
+        return ((android.os.SystemClock.elapsedRealtimeNanos() - fix.elapsedRealtimeNanos) / 1_000_000)
+            .coerceAtLeast(0L)
+    }
 
     private fun allowed(): Boolean =
         context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -106,11 +115,16 @@ class CarLocation(private val context: Context) : LocationListener {
         // arrive, so a stale NETWORK fix cannot overwrite a live GPS one.
         val previous = lastFix
         if (previous != null && location.elapsedRealtimeNanos < previous.elapsedRealtimeNanos) return
+        val wasStale = ageMs() > STALE_FIX_MS
         lastFix = location
         accuracy = location.accuracy
-        fixedAt = System.currentTimeMillis()
         val next = LatLng(location.latitude, location.longitude)
-        if (current?.let { it.latitude == next.latitude && it.longitude == next.longitude } == true) return
+        // Same spot, but a stale fix just became fresh again: that is news.
+        if (current?.let { it.latitude == next.latitude && it.longitude == next.longitude } == true &&
+            !wasStale
+        ) {
+            return
+        }
         current = next
         Log.i(
             TAG,
@@ -120,7 +134,9 @@ class CarLocation(private val context: Context) : LocationListener {
         onUpdate?.invoke()
     }
 
-    private companion object {
-        const val TAG = "CarLocation"
+    companion object {
+        private const val TAG = "CarLocation"
+        /** Past this a fix is shown as stale rather than trusted. */
+        const val STALE_FIX_MS = 30_000L
     }
 }

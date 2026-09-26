@@ -62,7 +62,9 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     }
 
     /** The crosshair button: follow the driver as they drive (tap again to stop). */
-    private fun centreOnMe() = session.toggleFollow()
+    private fun centreOnMe() {
+        session.toggleFollow()
+    }
 
     // ---- surface ---------------------------------------------------------
 

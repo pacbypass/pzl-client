@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import {
   Appbar,
   Button,
@@ -39,6 +39,9 @@ import { useUnits } from '@/units/UnitProvider';
  * means "po czasie".
  */
 const HARVEST_COLOR = '#a35200';
+
+/** Don't re-pull on every tab flick; a minute-old list is fine. */
+const FOCUS_REFRESH_MS = 60_000;
 
 function fmt(iso?: string | null): string {
   if (!iso) return '—';
@@ -91,6 +94,8 @@ export default function HuntingBookScreen() {
 
   const qc = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
+  /** When the newest page was last pulled, for the focus refresh below. */
+  const lastRefresh = useRef(0);
 
   /**
    * Lightweight refresh (on open + pull-to-refresh): re-fetch ONLY page 1 and
@@ -115,6 +120,7 @@ export default function HuntingBookScreen() {
           ? { ...old, pages: [page1, ...old.pages.slice(1)] }
           : old,
       );
+      lastRefresh.current = Date.now();
     } finally {
       setRefreshing(false);
     }
@@ -147,6 +153,23 @@ export default function HuntingBookScreen() {
       setRefreshing(false);
     }
   }, [refreshing, qc, unitId, districtId, year, query]);
+
+  /**
+   * Coming back to the tab pulls the newest page again, if it has gone stale.
+   *
+   * Tab screens stay mounted, so the effect below only fires on the first open
+   * and when the obwód/rok changes — without this, switching to the map and
+   * back (or leaving the app in a pocket for an hour) left yesterday's list on
+   * screen. Throttled, so flicking between tabs does not spam the API.
+   */
+  const refreshRef = useRef(refreshLatest);
+  refreshRef.current = refreshLatest;
+  useFocusEffect(
+    useCallback(() => {
+      if (Date.now() - lastRefresh.current < FOCUS_REFRESH_MS) return;
+      void refreshRef.current();
+    }, []),
+  );
 
   // On open (and when the obwód/rok changes) update just the newest page.
   const lastKey = useRef<string>('');

@@ -18,7 +18,6 @@ import { EmptyState, ErrorState, LoadingScreen } from '@/components/ui';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import {
   bookKey,
-  fetchBookPage1,
   harvestedNames,
   huntStatus,
   isCurrentlyHunting,
@@ -93,34 +92,17 @@ export default function HuntingBookScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   /**
-   * Lightweight refresh (on open + pull-to-refresh): re-fetch ONLY page 1 and
-   * splice it into the cache, leaving the already-loaded later pages untouched.
-   * One request — the newest hunts are on page 1, so this catches new/changed
-   * entries without re-pulling everything.
-   */
-  const refreshLatest = useCallback(async () => {
-    if (!unitId || !districtId || !year) return;
-    const key = bookKey(unitId, districtId, year);
-    // Nothing cached yet → the query fetches page 1 on its own; don't double-fetch.
-    if (!qc.getQueryData<InfiniteData<BookPage>>(key)) return;
-    if (refreshing) return;
-    setRefreshing(true);
-    try {
-      const page1 = await fetchBookPage1(unitId, districtId, year);
-      qc.setQueryData<InfiniteData<BookPage>>(key, (old) =>
-        old && old.pages.length
-          ? { ...old, pages: [page1, ...old.pages.slice(1)] }
-          : old,
-      );
-    } finally {
-      setRefreshing(false);
-    }
-  }, [refreshing, qc, unitId, districtId, year]);
-
-  /**
-   * Full reload (top reload button only): re-fetch page 1 first (shows the
-   * newest immediately), then reload every page the user had scrolled through,
-   * spinner on until all are in.
+   * The ONLY refresh: re-fetch page 1 first (the newest entries appear at
+   * once), then reload every page the user had scrolled through, spinner on
+   * until all are in.
+   *
+   * There used to be a cheaper page-1-only variant on open and pull, on the
+   * reasoning that changes land at the top of a newest-first book. They do not
+   * always: crossing a hunt out, writing one out or editing an older entry
+   * changes a row that may sit pages down, and that row then stayed stale
+   * until someone pressed the reload button. Correctness over the saved
+   * requests — a book page is ~10 entries and only the pages actually scrolled
+   * are re-fetched.
    */
   const refreshAll = useCallback(async () => {
     if (refreshing) return;
@@ -145,14 +127,14 @@ export default function HuntingBookScreen() {
     }
   }, [refreshing, qc, unitId, districtId, year, query]);
 
-  // On open (and when the obwód/rok changes) update just the newest page.
+  // On open (and when the obwód/rok changes) reload everything that is loaded.
   const lastKey = useRef<string>('');
   useEffect(() => {
     const k = `${unitId}|${districtId}|${year}`;
     if (!districtId || !year || k === lastKey.current) return;
     lastKey.current = k;
-    void refreshLatest();
-  }, [unitId, districtId, year, refreshLatest]);
+    void refreshAll();
+  }, [unitId, districtId, year, refreshAll]);
 
   if (!activeUnitId) {
     return (
@@ -243,7 +225,7 @@ export default function HuntingBookScreen() {
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={refreshLatest}
+              onRefresh={refreshAll}
             />
           }
           renderItem={({ item }) => (

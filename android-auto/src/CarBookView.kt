@@ -33,6 +33,8 @@ class CarBookView(
     private var fetchedAt = 0L
     private var offline = false
     private var scroll = 0f
+    /** How many pages were open before a reload, so they can be restored. */
+    private var restoreTo = 1
     private var pickerOpen = false
     private var contentHeight = 0f
     private var viewportHeight = 0f
@@ -49,8 +51,16 @@ class CarBookView(
         if (entries.isEmpty() && !loading) reload()
     }
 
+    /**
+     * Reload everything currently loaded, not just the first page — the same
+     * rule as the phone. A change to an older entry (crossed out, written out,
+     * edited) sits pages down and would otherwise stay stale on screen.
+     */
     fun reload() {
         val id = districtId ?: districts().firstOrNull()?.first ?: return
+        // loadMore() refuses while a request is in flight, so the pages are
+        // pulled back one after another as each lands, not in a loop here.
+        restoreTo = page.coerceAtLeast(1)
         loading = true
         error = null
         page = 1
@@ -65,6 +75,7 @@ class CarBookView(
                 offline = fromCache
                 loading = false
                 onChanged()
+                if (page < restoreTo) loadMore()
             },
             onError = { message ->
                 // Keep whatever is already on screen; an empty list with an
@@ -92,6 +103,8 @@ class CarBookView(
                 entries = entries + list.filter { it.id !in seen }
                 loading = false
                 onChanged()
+                // Still catching up to where the user had scrolled.
+                if (page < restoreTo) loadMore()
             },
             onError = { message ->
                 error = message

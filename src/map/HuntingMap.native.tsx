@@ -9,7 +9,6 @@ import {
   ShapeSource,
   SymbolLayer,
   UserLocation,
-  UserTrackingMode,
 } from '@maplibre/maplibre-react-native';
 import { buildMapStyle, type VectorOverlay } from '@/map/style';
 import { POLAND_CENTER } from '@/map/layers';
@@ -25,12 +24,8 @@ export type HuntingMapProps = {
   onMapPress?: (coord: { longitude: number; latitude: number }) => void;
   /** Coordinate of the currently-selected device, highlighted with a ring. */
   highlight?: { longitude: number; latitude: number } | null;
-  /** Keep the camera centred on the user as they move (follow-me). */
-  followUser?: boolean;
-  /** Zoom the map goes to when following starts. */
-  followZoom?: number;
-  /** Following stopped (or started) on the map's side — e.g. the user panned. */
-  onFollowUserChange?: (following: boolean) => void;
+  trackTo?: { longitude: number; latitude: number; zoom?: number } | null;
+  onUserMove?: (camera: MapCamera) => void;
 };
 
 /** Native map via @maplibre/maplibre-react-native (v10, named exports). */
@@ -43,9 +38,8 @@ export function HuntingMap({
   flyTo,
   onMapPress,
   highlight,
-  followUser,
-  followZoom,
-  onFollowUserChange,
+  trackTo,
+  onUserMove,
 }: HuntingMapProps) {
   const highlightShape = useMemo<GeoJSON.FeatureCollection>(
     () => ({
@@ -89,11 +83,9 @@ export function HuntingMap({
       }}
       onRegionDidChange={(feature) => {
         const [longitude, latitude] = feature.geometry.coordinates;
-        onCameraChange?.({
-          longitude,
-          latitude,
-          zoom: feature.properties.zoomLevel,
-        });
+        const camera = { longitude, latitude, zoom: feature.properties.zoomLevel };
+        onCameraChange?.(camera);
+        if (feature.properties.isUserInteraction) onUserMove?.(camera);
       }}
     >
       {/* Declarative camera. When `flyTo` is set the camera animates to it; when
@@ -106,19 +98,20 @@ export function HuntingMap({
           centerCoordinate: [cam.longitude, cam.latitude],
           zoomLevel: cam.zoom,
         }}
-        centerCoordinate={flyTo && !followUser ? [flyTo.longitude, flyTo.latitude] : undefined}
-        zoomLevel={flyTo && !followUser ? flyTo.zoom : undefined}
-        animationMode={flyTo && !followUser ? 'flyTo' : undefined}
-        animationDuration={flyTo && !followUser ? 800 : undefined}
-        // Follow-me, north up. MapLibre's own tracking: it keeps the dot
-        // centred as fixes arrive, a pinch zooms about it, and a pan ends it —
-        // reported back so the button can switch off.
-        followUserLocation={!!followUser}
-        followUserMode={UserTrackingMode.Follow}
-        followZoomLevel={followUser ? followZoom : undefined}
-        onUserTrackingModeChange={(e) =>
-          onFollowUserChange?.(e.nativeEvent.payload.followUserLocation)
+        // Follow-me (trackTo) eases to each new fix and leaves the zoom alone
+        // unless one is given; flyTo is the one-shot jump. MapLibre's own
+        // user tracking was tried and dropped: it cancelled itself about half
+        // a second after starting.
+        centerCoordinate={
+          trackTo
+            ? [trackTo.longitude, trackTo.latitude]
+            : flyTo
+              ? [flyTo.longitude, flyTo.latitude]
+              : undefined
         }
+        zoomLevel={trackTo ? trackTo.zoom : flyTo ? flyTo.zoom : undefined}
+        animationMode={trackTo ? 'easeTo' : flyTo ? 'flyTo' : undefined}
+        animationDuration={trackTo ? 900 : flyTo ? 800 : undefined}
       />
 
       {vectorOverlays.map((ov) =>

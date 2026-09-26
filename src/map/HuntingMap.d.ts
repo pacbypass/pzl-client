@@ -16,12 +16,13 @@ export type HuntingMapProps = {
   onMapPress?: (coord: { longitude: number; latitude: number }) => void;
   /** Coordinate of the currently-selected device, highlighted with a ring. */
   highlight?: { longitude: number; latitude: number } | null;
-  /** Keep the camera centred on the user as they move (follow-me). */
-  followUser?: boolean;
-  /** Zoom the map goes to when following starts. */
-  followZoom?: number;
-  /** Following stopped (or started) on the map's side — e.g. the user panned. */
-  onFollowUserChange?: (following: boolean) => void;
+  /**
+   * Follow-me: while set, the camera eases to this point (and to `zoom`, when
+   * given) every time it changes. Clearing it hands the camera back.
+   */
+  trackTo?: { longitude: number; latitude: number; zoom?: number } | null;
+  /** The user moved the map by hand (pan or pinch), with where it ended up. */
+  onUserMove?: (camera: MapCamera) => void;
 };
 
 export declare function HuntingMap(props: HuntingMapProps): React.ReactElement;

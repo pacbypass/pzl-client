@@ -110,8 +110,67 @@ export default function MapScreen() {
   const [locating, setLocating] = useState(false);
   /** Follow-me: the map keeps the user centred as they drive. */
   const [following, setFollowing] = useState(false);
-  /** Zoom following starts at: the user's own, unless too far out to drive by. */
-  const [followZoom, setFollowZoom] = useState(14);
+  /** Where follow-me last put the camera (and the zoom, on the first fix). */
+  const [trackTo, setTrackTo] = useState<{
+    longitude: number;
+    latitude: number;
+    zoom?: number;
+  } | null>(null);
+
+  // While following, watch the position and move the camera with every fix.
+  // The first fix also sets the zoom (the user's own, unless too far out to
+  // drive by); after that the zoom is left to the user.
+  useEffect(() => {
+    if (!following) {
+      setTrackTo(null);
+      return;
+    }
+    let sub: Location.LocationSubscription | null = null;
+    let cancelled = false;
+    let first = true;
+    const startZoom = settings.camera?.zoom ?? 0;
+    Location.watchPositionAsync(
+      { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 2 },
+      (pos) => {
+        setTrackTo({
+          longitude: pos.coords.longitude,
+          latitude: pos.coords.latitude,
+          zoom: first ? (startZoom < 12 ? 14 : startZoom) : undefined,
+        });
+        first = false;
+      },
+    )
+      .then((s) => {
+        if (cancelled) s.remove();
+        else sub = s;
+      })
+      .catch(() => {
+        setFollowing(false);
+        setSnack('Nie udało się ustalić lokalizacji.');
+      });
+    return () => {
+      cancelled = true;
+      sub?.remove();
+    };
+    // Only (re)start on the toggle; the start zoom is read once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [following]);
+
+  /**
+   * A hand-made camera move ends follow-me when it moved the map off the user
+   * (a pan) — a pinch leaves the user near the middle and keeps following.
+   */
+  const onUserMove = (camera: MapCamera) => {
+    if (!following || !trackTo) return;
+    const metresPerPixel =
+      (156543.03 * Math.cos((camera.latitude * Math.PI) / 180)) / Math.pow(2, camera.zoom);
+    const dx =
+      (camera.longitude - trackTo.longitude) *
+      111_320 *
+      Math.cos((camera.latitude * Math.PI) / 180);
+    const dy = (camera.latitude - trackTo.latitude) * 110_540;
+    if (Math.hypot(dx, dy) / metresPerPixel > 80) setFollowing(false);
+  };
   const [selected, setSelected] = useState<Device | null>(null);
 
   // Ask for (or read) the location permission — needed for the blue dot even
@@ -443,10 +502,6 @@ export default function MapScreen() {
           return;
         }
       }
-      // MapLibre's tracking moves the camera to the user itself. No separate
-      // fly-in: clearing a fly-in's camera target cancels tracking at once.
-      const zoom = settings.camera?.zoom ?? 0;
-      setFollowZoom(zoom < 12 ? 14 : zoom);
       setFollowing(true);
     } catch {
       setSnack('Nie udało się ustalić lokalizacji.');
@@ -555,11 +610,8 @@ export default function MapScreen() {
           onCameraChange={(camera) => update({ camera })}
           showUserLocation={locationGranted}
           flyTo={flyTo}
-          followUser={following && locationGranted}
-          followZoom={followZoom}
-          onFollowUserChange={(on) => {
-            if (!on) setFollowing(false);
-          }}
+          trackTo={following ? trackTo : null}
+          onUserMove={onUserMove}
           onMapPress={onMapPress}
           highlight={
             selected?.marker?.coordinates?.length === 2

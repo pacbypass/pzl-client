@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
+import { useOnForeground } from '@/hooks/useOnForeground';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import * as Location from 'expo-location';
 import {
@@ -184,12 +185,41 @@ export default function MapScreen() {
   // never fires for them.
   const occupiedRef = useRef(occupied.query);
   occupiedRef.current = occupied.query;
+  const refreshOccupiedIfStale = useCallback(() => {
+    const q = occupiedRef.current;
+    if (q.isStale && !q.isFetching) void q.refetch();
+  }, []);
+  const mapFocused = useRef(false);
   useFocusEffect(
     useCallback(() => {
-      const q = occupiedRef.current;
-      if (q.isStale && !q.isFetching) void q.refetch();
-    }, []),
+      mapFocused.current = true;
+      refreshOccupiedIfStale();
+      return () => {
+        mapFocused.current = false;
+      };
+    }, [refreshOccupiedIfStale]),
   );
+  // …and when the app returns from the background with the map in front, which
+  // focus alone does not catch. Other tabs' screens stay mounted too, so only
+  // refresh when the map is the one being looked at.
+  useOnForeground(() => {
+    if (mapFocused.current) refreshOccupiedIfStale();
+  });
+
+  // A failed occupancy refresh keeps the last known data on the map; say so,
+  // rather than let old data pass for current.
+  const occupiedErrorAt = occupied.query.errorUpdatedAt;
+  useEffect(() => {
+    if (!occupiedErrorAt) return;
+    const at = occupied.query.dataUpdatedAt;
+    setSnack(
+      at
+        ? `Nie udało się odświeżyć zajętych rewirów — dane z ${new Date(at).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}.`
+        : 'Nie udało się pobrać zajętych rewirów.',
+    );
+    // Only a new failure should raise the message.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [occupiedErrorAt]);
 
   // Occupied rewiry indexed by their normalized label ("13 C" → "13C"). A label
   // repeats across obwody, so a match must agree on the obwód too — unless the

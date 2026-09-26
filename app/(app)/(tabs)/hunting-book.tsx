@@ -9,6 +9,7 @@ import {
   FAB,
   Icon,
   Menu,
+  Snackbar,
   Text,
   useTheme,
 } from 'react-native-paper';
@@ -18,6 +19,7 @@ import { EmptyState, ErrorState, LoadingScreen } from '@/components/ui';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import {
   bookKey,
+  fetchBookPage,
   fetchBookPage1,
   harvestedNames,
   huntStatus,
@@ -31,6 +33,7 @@ import {
   useHuntingYears,
 } from '@/features/huntingBook/lookups';
 import { useUnits } from '@/units/UnitProvider';
+import { useOnForeground } from '@/hooks/useOnForeground';
 
 /**
  * Pozyskanie — the harvest row (and the shots that produced it) reads in a deep
@@ -70,7 +73,12 @@ export default function HuntingBookScreen() {
 
   const year =
     yearSel ?? years.data?.find((y) => y.isActual)?.value ?? years.data?.[0]?.value;
-  const districtId = distSel ?? districts.data?.[0]?.id;
+  // A pick from another koło (the koło was switched in the menu) is not an
+  // obwód of this one; fall back to the first, as on a fresh open.
+  const districtId =
+    distSel && (!districts.data || districts.data.some((d) => d.id === distSel))
+      ? distSel
+      : districts.data?.[0]?.id;
   const yearLabel =
     years.data?.find((y) => y.value === year)?.label ?? (year ? String(year) : '—');
   const districtLabel =
@@ -94,37 +102,67 @@ export default function HuntingBookScreen() {
 
   const qc = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
+  /** Guards against overlapping refreshes without re-creating the callbacks. */
+  const refreshingRef = useRef(false);
   /** When the newest page was last pulled, for the focus refresh below. */
   const lastRefresh = useRef(0);
 
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+
   /**
-   * Lightweight refresh (on open + pull-to-refresh): re-fetch ONLY page 1 and
-   * splice it into the cache, leaving the already-loaded later pages untouched.
+   * Lightweight refresh (on open, focus, return to the app, pull-to-refresh):
+   * re-fetch page 1 and splice it into the cache — one request.
    *
-   * One request, and since a page is BOOK_PAGE_SIZE (100) entries that covers
-   * the newest hundred hunts — deep enough that an entry crossed out or written
-   * out days ago is still picked up. Older rows than that refresh on the reload
-   * button, which re-pulls every loaded page.
+   * A page is BOOK_PAGE_SIZE (100) entries, so that covers the newest hundred
+   * hunts. But new sign-ups push older rows from page 1 onto page 2, and a
+   * stale page 2 would then be missing them. So when more pages are loaded and
+   * page 1 has moved, the loaded pages behind it are re-pulled as well.
    */
   const refreshLatest = useCallback(async () => {
     if (!unitId || !districtId || !year) return;
     const key = bookKey(unitId, districtId, year);
     // Nothing cached yet → the query fetches page 1 on its own; don't double-fetch.
     if (!qc.getQueryData<InfiniteData<BookPage>>(key)) return;
-    if (refreshing) return;
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
     setRefreshing(true);
+    setRefreshError(null);
     try {
+      // A "load more" landing after the splice would write back the page 1 it
+      // started from, undoing this refresh; let it finish first.
+      for (let i = 0; i < 100 && qc.isFetching({ queryKey: key }) > 0; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const before = qc.getQueryData<InfiniteData<BookPage>>(key);
       const page1 = await fetchBookPage1(unitId, districtId, year);
+      const loaded = before?.pages.length ?? 0;
+      const fresh = new Set(page1.entries.map((e) => e.id));
+      const shifted =
+        page1.total !== before?.pages[0]?.total ||
+        (before?.pages[0]?.entries ?? []).some((e) => !fresh.has(e.id));
+      let rest: BookPage[] | null = null;
+      if (loaded > 1 && shifted) {
+        rest = [];
+        for (let page = 2; page <= loaded; page++) {
+          rest.push(await fetchBookPage(unitId, districtId, year, page));
+        }
+      }
       qc.setQueryData<InfiniteData<BookPage>>(key, (old) =>
         old && old.pages.length
-          ? { ...old, pages: [page1, ...old.pages.slice(1)] }
+          ? { ...old, pages: [page1, ...(rest ?? old.pages.slice(1))] }
           : old,
       );
       lastRefresh.current = Date.now();
+    } catch (e) {
+      // The list on screen stays as it was; say the refresh did not happen.
+      setRefreshError(
+        e instanceof Error ? e.message : 'Nie udało się odświeżyć książki.',
+      );
     } finally {
+      refreshingRef.current = false;
       setRefreshing(false);
     }
-  }, [refreshing, qc, unitId, districtId, year]);
+  }, [qc, unitId, districtId, year]);
 
   /**
    * Full reload (top reload button only): re-fetch page 1 first (shows the
@@ -144,11 +182,18 @@ export default function HuntingBookScreen() {
             : old,
         );
       }
-      await query.refetch();
+      const first = await query.refetch();
+      if (first.isError) throw first.error;
       for (let i = 1; i < pageCount; i++) {
         const res = await query.fetchNextPage();
+        if (res.isError) throw res.error;
         if (!res.hasNextPage) break;
       }
+      lastRefresh.current = Date.now();
+    } catch (e) {
+      setRefreshError(
+        e instanceof Error ? e.message : 'Nie udało się odświeżyć książki.',
+      );
     } finally {
       setRefreshing(false);
     }
@@ -164,12 +209,24 @@ export default function HuntingBookScreen() {
    */
   const refreshRef = useRef(refreshLatest);
   refreshRef.current = refreshLatest;
+  const refreshIfStale = useCallback(() => {
+    if (Date.now() - lastRefresh.current < FOCUS_REFRESH_MS) return;
+    void refreshRef.current();
+  }, []);
+  const bookFocused = useRef(false);
   useFocusEffect(
     useCallback(() => {
-      if (Date.now() - lastRefresh.current < FOCUS_REFRESH_MS) return;
-      void refreshRef.current();
-    }, []),
+      bookFocused.current = true;
+      refreshIfStale();
+      return () => {
+        bookFocused.current = false;
+      };
+    }, [refreshIfStale]),
   );
+  // Returning to the app with the book in front is not a focus change.
+  useOnForeground(() => {
+    if (bookFocused.current) refreshIfStale();
+  });
 
   // On open (and when the obwód/rok changes) update just the newest page.
   const lastKey = useRef<string>('');
@@ -259,7 +316,9 @@ export default function HuntingBookScreen() {
           contentContainerStyle={styles.list}
           onEndReachedThreshold={0.5}
           onEndReached={() => {
-            if (query.hasNextPage && !query.isFetchingNextPage) query.fetchNextPage();
+            if (query.hasNextPage && !query.isFetchingNextPage && !refreshingRef.current) {
+              query.fetchNextPage();
+            }
           }}
           ListFooterComponent={
             query.isFetchingNextPage ? (
@@ -292,6 +351,13 @@ export default function HuntingBookScreen() {
         onPress={() => router.push('/(app)/hunting-signup' as never)}
         style={styles.fab}
       />
+      <Snackbar
+        visible={!!refreshError}
+        onDismiss={() => setRefreshError(null)}
+        duration={4000}
+      >
+        {`Nie udało się odświeżyć — pokazuję zapisane wpisy. ${refreshError ?? ''}`}
+      </Snackbar>
     </View>
   );
 }

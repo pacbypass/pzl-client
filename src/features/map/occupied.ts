@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   fetchBookPage,
   huntStatus,
@@ -168,26 +168,45 @@ export function useOccupiedRewirs(
   enabled: boolean,
 ) {
   const districtIds = useMemo(() => districts.map((d) => d.id), [districts]);
+  const qc = useQueryClient();
+  const key = occupiedKey(unitId, year, districtIds);
 
   const query = useQuery({
-    queryKey: occupiedKey(unitId, year, districtIds),
+    queryKey: key,
     enabled: !!unitId && !!year && districtIds.length > 0 && enabled,
     staleTime: OCCUPIED_STALE_MS,
     gcTime: 1000 * 60 * 60 * 24 * 7, // keep the last view readable offline
     refetchOnReconnect: false,
     queryFn: async (): Promise<OpenHunt[]> => {
-      const per = await Promise.all(
-        districtIds.map(async (districtId) => {
-          try {
-            const entries = await fetchOpenHunts(unitId, districtId, year as number);
-            return entries.map((entry) => ({ districtId, entry }));
-          } catch {
-            // One obwód failing must not blank out the others.
-            return [] as OpenHunt[];
-          }
-        }),
+      // A failed fetch must NEVER read as "nobody is hunting": that paints
+      // taken rewiry as free. An obwód that fails keeps what was last known
+      // for it; with nothing known, the whole refresh fails, so the previous
+      // result stays on screen (with its age) and the error is reported.
+      const previous = qc.getQueryData<OpenHunt[]>(key);
+      const results = await Promise.allSettled(
+        districtIds.map((districtId) =>
+          fetchOpenHunts(unitId, districtId, year as number),
+        ),
       );
-      return per.flat();
+      let firstError: unknown = null;
+      const out: OpenHunt[] = [];
+      results.forEach((r, i) => {
+        const districtId = districtIds[i];
+        if (r.status === 'fulfilled') {
+          out.push(...r.value.map((entry) => ({ districtId, entry })));
+        } else {
+          firstError ??= r.reason;
+        }
+      });
+      if (firstError !== null) {
+        if (!previous) throw firstError;
+        const failed = new Set(
+          districtIds.filter((_, i) => results[i].status === 'rejected'),
+        );
+        if (failed.size === districtIds.length) throw firstError;
+        out.push(...previous.filter((h) => failed.has(h.districtId)));
+      }
+      return out;
     },
   });
 

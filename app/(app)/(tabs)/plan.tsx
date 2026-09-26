@@ -44,7 +44,12 @@ export default function PlanScreen() {
   // Defaults: the "actual" hunting year and the first district.
   const year =
     yearSel ?? years.data?.find((y) => y.isActual)?.value ?? years.data?.[0]?.value;
-  const districtId = districtSel ?? districts.data?.[0]?.id;
+  // A pick from another koło (switched in the menu) is not an obwód of this
+  // one; fall back to the first, as on a fresh open.
+  const districtId =
+    districtSel && (!districts.data || districts.data.some((d) => d.id === districtSel))
+      ? districtSel
+      : districts.data?.[0]?.id;
   const yearLabel =
     years.data?.find((y) => y.value === year)?.label ?? (year ? String(year) : '—');
   const districtLabel =

@@ -33,7 +33,8 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
         onRefresh = { refresh() },
         onLocate = { centreOnMe() },
     )
-    private var data: CarMapData = CarMapStore.fallback()
+    private val session = CarMapSession(carContext, renderer, chrome, location) { invalidate() }
+    private val data: CarMapData get() = session.data
 
     init {
         lifecycle.addObserver(this)
@@ -46,13 +47,16 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     override fun onCreate(owner: LifecycleOwner) {
         android.util.Log.i(TAG, "registering surface callback")
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(this)
-        location.onUpdate = {
-            chrome.updateLocation(location.current, location.accuracy, location.fixedAt)
-        }
         location.start()
     }
 
+    /** Polling (occupancy, the position's age) only while the map is shown. */
+    override fun onStart(owner: LifecycleOwner) = session.start()
+
+    override fun onStop(owner: LifecycleOwner) = session.stop()
+
     override fun onDestroy(owner: LifecycleOwner) {
+        session.stop()
         location.stop()
         renderer.detach()
     }
@@ -77,33 +81,12 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
         )
         if (surface == null) return
         renderer.attach(surface, container.width, container.height, container.dpi)
-        load()
+        session.load()
+        invalidate()
     }
 
     override fun onSurfaceDestroyed(container: SurfaceContainer) {
         renderer.detach()
-    }
-
-    private fun load() {
-        val previous = data.updatedAt
-        data = CarMapStore.readOrFallback(carContext)
-        android.util.Log.i(
-            TAG,
-            "refresh: file ${if (data.updatedAt == previous) "unchanged" else "updated"}",
-        )
-        android.util.Log.i(
-            TAG,
-            "load style=${data.styleJson.length}B markers=${data.markers.size} updated=${data.updatedAt}",
-        )
-        chrome.data = data
-        chrome.reset()
-        renderer.setStyle(data.styleJson)
-        renderer.setMarkers(data.markers)
-        renderer.setDevices(data.devices)
-        renderer.setShapes(data.occupiedShapes)
-        renderer.setUserLocation(location.current)
-        renderer.setCamera(data.center, data.zoom)
-        invalidate()
     }
 
     // ---- gestures --------------------------------------------------------
@@ -120,8 +103,7 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
         if (chrome.tab() == CarTab.BOOK) {
             chrome.reloadBook()
         } else {
-            renderer.retryDroppedSources()
-            load()
+            session.refresh()
         }
     }
 

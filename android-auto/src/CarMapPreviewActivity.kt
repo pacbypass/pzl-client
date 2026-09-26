@@ -30,6 +30,7 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var renderer: CarMapRenderer
     private lateinit var chrome: CarMapChrome
     private lateinit var location: CarLocation
+    private lateinit var session: CarMapSession
     private lateinit var scale: ScaleGestureDetector
     private var downX = 0f
     private var downY = 0f
@@ -44,14 +45,13 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
         chrome = CarMapChrome(
             this,
             renderer,
-            onRefresh = { reload() },
+            onRefresh = { session.refresh() },
             onLocate = { location.current?.let { renderer.setCamera(it, 14.0) } },
             showRefresh = true,
         )
-        location.onUpdate = {
-            chrome.updateLocation(location.current, location.accuracy, location.fixedAt)
-        }
+        session = CarMapSession(this, renderer, chrome, location)
         location.start()
+        session.start()
         renderer.overlay = { canvas, w, h -> chrome.draw(canvas, w, h) }
         val view = SurfaceView(this)
         view.holder.addCallback(this)
@@ -117,21 +117,11 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         renderer.attach(holder.surface, width, height, resources.displayMetrics.densityDpi)
-        reload()
-    }
-
-    private fun reload() {
-        val data = CarMapStore.readOrFallback(this)
-        chrome.data = data
-        chrome.reset()
-        renderer.setStyle(data.styleJson)
-        renderer.setMarkers(data.markers)
-        renderer.setDevices(data.devices)
-        renderer.setShapes(data.occupiedShapes)
-        renderer.setCamera(data.center, data.zoom)
+        session.load()
     }
 
     override fun onDestroy() {
+        session.stop()
         location.stop()
         super.onDestroy()
     }

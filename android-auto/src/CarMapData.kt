@@ -30,6 +30,10 @@ data class CarMapData(
     val occupiedShapes: List<CarShape> = emptyList(),
     /** Every rewir of the koło, not only the taken ones. */
     val rewirs: List<CarRewir> = emptyList(),
+    /** When the car last worked out occupancy itself; 0 = only the phone's. */
+    val occupancyAt: Long = 0L,
+    /** That occupancy came (at least partly) from the offline copy. */
+    val occupancyOffline: Boolean = false,
 )
 
 /** An ambona / zwyżka / paśnik …, as the phone's device card shows it. */
@@ -131,36 +135,37 @@ object CarMapStore {
         return out
     }
 
-    /** Outlines of the taken rewiry, matched to their marker by rewir label, so
-     *  tapping inside the red area opens the same card as tapping the pin. */
+    /** Outlines of the taken rewiry, so tapping inside the red area opens the
+     *  same card as tapping the pin. */
     private fun shapesFrom(style: JSONObject, markers: List<CarMarker>): List<CarShape> {
+        val features = style.optJSONObject("sources")?.optJSONObject("geo-rewirs-occupied")
+            ?.optJSONObject("data")?.optJSONArray("features") ?: return emptyList()
+        return shapesFor(features, markers)
+    }
+
+    /** Comparison form of a rewir label — `normalizeRewir` in book.ts. */
+    fun normalizeRewir(name: String): String = name.replace(Regex("\\s+"), "").uppercase()
+
+    /**
+     * Match each occupied polygon to its marker by obwód AND rewir: labels
+     * repeat across obwody, and matching on the name alone opened rewir "2" of
+     * the wrong obwód. Only when the obwód cannot decide (the polygon carries
+     * none, or the book and the map number obwody differently) does the label
+     * alone count — and then only if exactly one marker has it.
+     */
+    fun shapesFor(features: JSONArray, markers: List<CarMarker>): List<CarShape> {
         val out = mutableListOf<CarShape>()
-        val fc = style.optJSONObject("sources")?.optJSONObject("geo-rewirs-occupied")
-            ?.optJSONObject("data") ?: return out
-        val features = fc.optJSONArray("features") ?: return out
         for (i in 0 until features.length()) {
             val f = features.optJSONObject(i) ?: continue
-            val name = f.optJSONObject("properties")?.optString("name") ?: continue
-            val marker = markers.firstOrNull {
-                it.title.removePrefix("Rewir ").trim().equals(name.trim(), ignoreCase = true)
-            } ?: continue
-            val geometry = f.optJSONObject("geometry") ?: continue
-            val rings = mutableListOf<List<DoubleArray>>()
-            when (geometry.optString("type")) {
-                "Polygon" -> geometry.optJSONArray("coordinates")?.let { polygon ->
-                    for (r in 0 until polygon.length()) {
-                        ring(polygon.optJSONArray(r))?.let(rings::add)
-                    }
-                }
-                "MultiPolygon" -> geometry.optJSONArray("coordinates")?.let { multi ->
-                    for (p in 0 until multi.length()) {
-                        val polygon = multi.optJSONArray(p) ?: continue
-                        for (r in 0 until polygon.length()) {
-                            ring(polygon.optJSONArray(r))?.let(rings::add)
-                        }
-                    }
-                }
-            }
+            val props = f.optJSONObject("properties") ?: continue
+            val key = normalizeRewir(props.optString("name"))
+            if (key.isEmpty()) continue
+            val district = props.optString("districtId").takeIf { it.isNotBlank() && it != "null" }
+            val marker = district?.let { d -> markers.firstOrNull { "$d|$key" in it.keys } }
+                ?: markers.filter { m -> m.keys.any { it.substringAfter('|') == key } }
+                    .singleOrNull()
+                ?: continue
+            val rings = ringsOf(f.optJSONObject("geometry"))
             if (rings.isNotEmpty()) out.add(CarShape(marker.id, rings))
         }
         return out

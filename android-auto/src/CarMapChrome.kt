@@ -47,9 +47,11 @@ class CarMapChrome(
      * harness — position, its uncertainty, and which rewir it falls in. Keeping
      * this in the Screen meant the harness could not exercise it.
      */
-    fun updateLocation(position: LatLng?, accuracy: Float, fixedAt: Long) {
+    fun updateLocation(position: LatLng?, accuracy: Float, ageMs: Long) {
         renderer.setUserLocation(position)
-        val stale = fixedAt > 0 && System.currentTimeMillis() - fixedAt > STALE_FIX_MS
+        // Also called on a timer, not only when a fix arrives: fixes simply
+        // stop coming in a tunnel or a forest, and the readout has to notice.
+        val stale = ageMs > CarLocation.STALE_FIX_MS
         renderer.setUserAccuracy(accuracy, stale)
         whereAmI = when {
             position == null -> null
@@ -73,12 +75,17 @@ class CarMapChrome(
         renderer.redraw()
     }
 
-    private companion object {
-        /** Past this a fix is shown as stale rather than trusted. */
-        const val STALE_FIX_MS = 30_000L
-    }
-
+    /**
+     * New data keeps what the driver had open. A refresh used to close every
+     * card and panel; now a selected rewir stays selected — with its fresh
+     * hunter list — and only closes once nobody is hunting there any more.
+     */
     var data: CarMapData = CarMapStore.fallback()
+        set(value) {
+            field = value
+            selected = selected?.let { old -> value.markers.firstOrNull { it.id == old.id } }
+            if (selected == null && selectedDevice == null) renderer.setHighlight(null)
+        }
     private var selected: CarMarker? = null
     private var selectedDevice: CarDevice? = null
     private var layersOpen = false
@@ -175,6 +182,7 @@ class CarMapChrome(
             val text = ui.clip(where.text, ui.dp(13f), w * 0.62f, bold = true)
             val box = RectF(ui.dp(8f), ui.dp(6f), ui.dp(16f) + w * 0.62f, ui.dp(34f))
             ui.card(canvas, box, if (where.warn) CarUi.OVERDUE_CARD else CarTheme.surface, ui.dp(8f))
+            ui.block(box)
             ui.label(
                 canvas, text, box.left + ui.dp(10f), box.centerY() + ui.dp(5f), ui.dp(13f),
                 if (where.warn) CarTheme.occupied else CarTheme.onSurface, bold = true,
@@ -198,18 +206,24 @@ class CarMapChrome(
         }
     }
 
-    /** Koło name plus how old the phone's data is — the phone shows the unit
-     *  name and a DataAge chip in the same place. */
+    /**
+     * Koło name plus how old the occupancy is — the phone shows the unit name
+     * and a DataAge chip in the same place. Once the car has fetched who is
+     * hunting itself, that fetch is what the age refers to; before, it is the
+     * phone's hand-over. A copy served from the offline cache says so.
+     */
     private fun subtitle(): String {
         val unit = data.unit?.let { "$it · " } ?: ""
-        val age = if (data.updatedAt > 0) {
-            val mins = (System.currentTimeMillis() - data.updatedAt) / 60000
-            when {
-                mins < 1 -> "dane: przed chwilą"
-                mins < 60 -> "dane: $mins min temu"
-                mins < 60 * 24 -> "dane: ${mins / 60} godz. temu"
-                else -> "dane: ${mins / (60 * 24)} dni temu"
+        val at = if (data.occupancyAt > 0) data.occupancyAt else data.updatedAt
+        val age = if (at > 0) {
+            val mins = (System.currentTimeMillis() - at) / 60000
+            val ago = when {
+                mins < 1 -> "przed chwilą"
+                mins < 60 -> "$mins min temu"
+                mins < 60 * 24 -> "${mins / 60} godz. temu"
+                else -> "${mins / (60 * 24)} dni temu"
             }
+            "dane: $ago" + if (data.occupancyOffline) " (offline)" else ""
         } else {
             "brak danych z telefonu"
         }
@@ -232,6 +246,7 @@ class CarMapChrome(
             h - ui.dp(24f),
         )
         ui.card(canvas, rect, CarTheme.surface, ui.dp(10f))
+        ui.block(rect)
         var y = rect.top + ui.dp(13f)
         for ((label, color) in types) {
             ui.legendRow(canvas, rect.left + ui.dp(10f), y, label, color)
@@ -243,6 +258,7 @@ class CarMapChrome(
     private fun drawDeviceCard(canvas: Canvas, w: Float, h: Float, device: CarDevice) {
         val rect = RectF(w * 0.30f, h - ui.dp(58f), w - ui.dp(12f), h - ui.dp(12f))
         ui.card(canvas, rect)
+        ui.block(rect)
         ui.row(
             canvas,
             RectF(rect.left, rect.top, rect.right - ui.dp(30f), rect.bottom),
@@ -265,6 +281,7 @@ class CarMapChrome(
         val cardH = ui.dp(30f) + lines.size * ui.dp(16f)
         val rect = RectF(ui.dp(12f), h - cardH - ui.dp(12f), w * 0.58f, h - ui.dp(12f))
         ui.card(canvas, rect)
+        ui.block(rect)
 
         ui.row(
             canvas,

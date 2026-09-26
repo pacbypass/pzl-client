@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiRequest } from '@/api/client';
+import { ApiError, apiRequest } from '@/api/client';
 
 /**
  * Hunt management — harvested animals are recorded as "hunting events", and a
@@ -232,7 +232,111 @@ export type AddHarvestInput = {
   /** When the animal was harvested — set by the user (may be in the past, e.g.
    *  logged later than the shot). ISO string. */
   harvestDate: string;
+  /** Kept by the dialog across attempts; see `addHarvestOnce`. */
+  guard: HarvestGuard;
 };
+
+/**
+ * What the harvest dialog remembers between attempts, so no attempt — a
+ * double tap, an automatic retry, or the user pressing "Zapisz" again after a
+ * failure — can record the same animal twice.
+ */
+export type HarvestGuard = {
+  /** Ids of the hunt's harvests before the first send. */
+  before: Set<string> | null;
+  /** A send went out whose outcome is unknown (the reply never arrived). */
+  unsure: boolean;
+};
+
+export const newHarvestGuard = (): HarvestGuard => ({ before: null, unsure: false });
+
+/** How long one "Zapisz" keeps trying through a bad connection. */
+const HARVEST_TRY_MS = 3 * 60_000;
+const HARVEST_RETRY_DELAY_MS = 3_000;
+
+async function harvestIds(
+  unitId: string,
+  districtId: string | number,
+  huntingId: string,
+): Promise<Set<string>> {
+  const d = await apiRequest<unknown>(
+    `/units/${unitId}/hunting-districts/${districtId}/huntings/${huntingId}/animals`,
+  );
+  const arr = Array.isArray(d) ? d : ((d as { result?: unknown[] })?.result ?? []);
+  return new Set(
+    (arr as HuntAnimal[]).filter((a) => !a.isWounded).map((a) => String(a.id)),
+  );
+}
+
+/** A refusal the server gave on purpose: nothing was recorded, retrying won't help. */
+function isDefinitiveRefusal(e: unknown): boolean {
+  return (
+    e instanceof ApiError &&
+    e.status >= 400 &&
+    e.status < 500 &&
+    e.status !== 408 &&
+    e.status !== 429
+  );
+}
+
+/**
+ * Record a harvest exactly once, through a bad connection.
+ *
+ * The POST is not idempotent, and a lost reply leaves no way to know from the
+ * POST alone whether it landed. So the hunt's harvest list is read before the
+ * first send, and after any send with an unknown outcome the list is read
+ * again: a harvest that was not there before means the earlier send landed,
+ * and it is not sent again. Only one person records harvests on a hunt (its
+ * hunter), so a new row can only be this one.
+ */
+async function addHarvestOnce(unitId: string, input: AddHarvestInput): Promise<void> {
+  const { guard } = input;
+  const giveUpAt = Date.now() + HARVEST_TRY_MS;
+  for (;;) {
+    try {
+      if (!guard.before) {
+        guard.before = await harvestIds(unitId, input.districtId, input.huntingId);
+      }
+      if (guard.unsure) {
+        const now = await harvestIds(unitId, input.districtId, input.huntingId);
+        if ([...now].some((id) => !guard.before!.has(id))) {
+          guard.unsure = false;
+          return; // the earlier send landed
+        }
+      }
+      guard.unsure = true;
+      await apiRequest(
+        `/units/${unitId}/hunting-districts/${input.districtId}/huntings/${input.huntingId}/animals`,
+        {
+          method: 'POST',
+          body: {
+            authorizationId: input.authorizationId,
+            groundId: input.groundId,
+            authorizationAnimalId: input.authorizationAnimalId,
+            number: input.number,
+            harvestDate: input.harvestDate,
+          },
+        },
+      );
+      guard.unsure = false;
+      return;
+    } catch (e) {
+      if (isDefinitiveRefusal(e)) {
+        // This send was refused outright, so it recorded nothing; an earlier
+        // unsure one was already checked above before it went out.
+        guard.unsure = false;
+        throw e;
+      }
+      if (Date.now() > giveUpAt) {
+        throw new Error(
+          'Brak połączenia — nie udało się potwierdzić zapisu. Naciśnij Zapisz ' +
+            'ponownie: aplikacja najpierw sprawdzi, czy pozyskanie już się zapisało.',
+        );
+      }
+      await new Promise((r) => setTimeout(r, HARVEST_RETRY_DELAY_MS));
+    }
+  }
+}
 
 /**
  * Record a harvested animal:
@@ -246,20 +350,10 @@ export type AddHarvestInput = {
 export function useAddHarvest(unitId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: AddHarvestInput) =>
-      apiRequest(
-        `/units/${unitId}/hunting-districts/${input.districtId}/huntings/${input.huntingId}/animals`,
-        {
-          method: 'POST',
-          body: {
-            authorizationId: input.authorizationId,
-            groundId: input.groundId,
-            authorizationAnimalId: input.authorizationAnimalId,
-            number: input.number,
-            harvestDate: input.harvestDate,
-          },
-        },
-      ),
+    mutationFn: (input: AddHarvestInput) => addHarvestOnce(unitId, input),
+    // addHarvestOnce does its own, duplicate-safe retrying; the global
+    // "resend on network failure" policy would bypass that check.
+    retry: false,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['book', unitId] });
       qc.invalidateQueries({ queryKey: ['huntDetail', unitId] });

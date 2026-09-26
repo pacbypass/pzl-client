@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import {
@@ -24,6 +24,7 @@ import {
   type HuntStatus,
 } from '@/features/huntingBook/book';
 import {
+  newHarvestGuard,
   useAddHarvest,
   useDeleteHunt,
   useHuntAnimals,
@@ -392,6 +393,9 @@ function SlotDialog({
   const slots = usePermitAnimals(unitId, districtId, permitId);
   const addHarvest = useAddHarvest(unitId);
   const pending = addHarvest.isPending;
+  // Survives failed attempts, so pressing Zapisz again cannot double-record.
+  const guard = useRef(newHarvestGuard());
+  const sending = useRef(false);
 
   const animalLabelText = (a: PermitAnimalSlot) =>
     `${a.name}${a.igo ? ' · IGO' : ''} · pozostało ${a.remainingNumber}`;
@@ -417,8 +421,12 @@ function SlotDialog({
       setError(`Na upoważnieniu pozostało ${slot.remainingNumber} szt.`);
       return;
     }
+    // A second tap while the first is still going must not send again.
+    if (sending.current) return;
+    sending.current = true;
     try {
       await addHarvest.mutateAsync({
+        guard: guard.current,
         huntingId,
         districtId,
         authorizationId: permitId,
@@ -427,12 +435,15 @@ function SlotDialog({
         number: count,
         harvestDate: when.toISOString(),
       });
+      guard.current = newHarvestGuard();
       setSlot(undefined);
       setQty('1');
       setWhen(new Date());
       onDismiss();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Nie udało się zapisać');
+    } finally {
+      sending.current = false;
     }
   };
 
@@ -550,7 +561,7 @@ function SlotDialog({
         </Dialog.ScrollArea>
         <Dialog.Actions>
           <Button onPress={onDismiss}>Anuluj</Button>
-          <Button mode="contained" loading={pending} onPress={submit}>
+          <Button mode="contained" loading={pending} disabled={pending} onPress={submit}>
             Zapisz
           </Button>
         </Dialog.Actions>
@@ -640,6 +651,7 @@ function FinishDialog({
           <Button
             mode="contained"
             loading={update.isPending}
+            disabled={update.isPending}
             onPress={confirm}
             textColor="#fff"
             buttonColor="#c62828"

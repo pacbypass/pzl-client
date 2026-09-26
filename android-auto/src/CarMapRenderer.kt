@@ -23,10 +23,16 @@ import org.maplibre.android.snapshotter.MapSnapshotter
  * OFF-SCREEN by `MapSnapshotter` (the same engine, the same style JSON the
  * phone app builds) and the resulting bitmap is blitted to the surface.
  *
- * A snapshot costs a few hundred ms, so dragging does not re-render: the last
- * bitmap is blitted at an offset while the finger moves and a fresh snapshot is
- * requested once the gesture settles. That keeps panning responsive without a
- * live GL context.
+ * A snapshot costs a few hundred ms, so gestures do not wait for one. The
+ * camera moves at once, and whatever frames are in hand are drawn where that
+ * camera puts them — shifted for a drag, scaled for a pinch — until a fresh
+ * snapshot of the new camera lands. Every frame remembers the camera it was
+ * rendered at, so a slow render arriving late slots in where it belongs
+ * instead of dragging the view back to where it was when it started.
+ *
+ * Under the detailed frame sits a coarser one covering four times the span,
+ * so zooming out or dragging far shows real (if blurry) map at the edges
+ * rather than blank background.
  */
 class CarMapRenderer(private val context: Context) {
 
@@ -50,22 +56,56 @@ class CarMapRenderer(private val context: Context) {
         /** ~2.2MP, i.e. an 8.8MB frame, whatever the screen. */
         private const val MAX_BUFFER_PIXELS = 2_200_000f
         private const val MAX_AUTO_RETRIES = 3
+        private const val MIN_ZOOM = 4.0
+        private const val MAX_ZOOM = 17.0
+        /** The backdrop frame is rendered this many zoom levels further out. */
+        private const val CONTEXT_ZOOM_OUT = 2.0
+        /** Quiet time after a drag before a fresh render starts. */
+        private const val DRAG_SETTLE_MS = 250L
     }
 
     /** Size of the rendered bitmap (surface size × OVERSCAN). */
     private var bufferW = 0
     private var bufferH = 0
 
-    /** Offset of the visible window inside the rendered bitmap. */
-    private fun marginX() = (bufferW - width) / 2f
-    private fun marginY() = (bufferH - height) / 2f
+    /**
+     * Where a rendered frame lands on screen for the CURRENT camera: the pixel
+     * of the camera target inside the frame (cx, cy) goes to the screen centre,
+     * scaled by how far the camera has zoomed since the frame was rendered.
+     * Web Mercator pixels scale uniformly with zoom, so this is exact.
+     */
+    private inner class FrameView(val snapshot: MapSnapshot, zoom: Double) {
+        val scale = Math.pow(2.0, camera.zoom - zoom).toFloat()
+        private val t = snapshot.pixelForLatLng(camera.target ?: FALLBACK)
+        val cx = t.x
+        val cy = t.y
 
-    /** Screen pixel → pixel in the rendered bitmap. */
-    private fun toBufferX(x: Float) = x + marginX() - dragX
-    private fun toBufferY(y: Float) = y + marginY() - dragY
+        fun toScreen(position: LatLng): PointF {
+            val p = snapshot.pixelForLatLng(position)
+            return PointF((p.x - cx) * scale + width / 2f, (p.y - cy) * scale + height / 2f)
+        }
+
+        fun toFrame(x: Float, y: Float) =
+            PointF((x - width / 2f) / scale + cx, (y - height / 2f) / scale + cy)
+
+        fun latLngAt(x: Float, y: Float): LatLng? = snapshot.latLngForPixel(toFrame(x, y))
+
+        /** True once the visible window gets close to the frame's edge. */
+        fun nearEdge(): Boolean {
+            val slackX = (bufferW - width) * 0.15f
+            val slackY = (bufferH - height) * 0.15f
+            val halfW = width / 2f / scale
+            val halfH = height / 2f / scale
+            return cx - halfW < slackX || cx + halfW > snapshot.bitmap.width - slackX ||
+                cy - halfH < slackY || cy + halfH > snapshot.bitmap.height - slackY
+        }
+    }
+
+    private fun view(): FrameView? = lastSnapshot?.let { FrameView(it, snapZoom) }
 
     private val main = Handler(Looper.getMainLooper())
     private val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = Color.WHITE
@@ -85,11 +125,16 @@ class CarMapRenderer(private val context: Context) {
     private val disabledSources = mutableSetOf<String>()
     private var camera = CameraPosition.Builder().target(FALLBACK).zoom(6.0).build()
 
-    /** Last rendered frame, kept so a drag can blit it at an offset. */
+    /** Last rendered frame, redrawn under the camera while gestures move it. */
     private var lastSnapshot: MapSnapshot? = null
     private var lastBitmap: Bitmap? = null
-    private var dragX = 0f
-    private var dragY = 0f
+    /** Zoom `lastSnapshot` was rendered at. */
+    private var snapZoom = 0.0
+    /** Coarse backdrop frame (see class doc) and its own renderer. */
+    private var contextSnapshotter: MapSnapshotter? = null
+    private var contextSnapshot: MapSnapshot? = null
+    private var contextZoom = 0.0
+    private var contextInFlight = false
     private var snapshotInFlight = false
     private var snapshotQueued = false
     /** Consecutive failures with nothing on screen. */
@@ -134,8 +179,7 @@ class CarMapRenderer(private val context: Context) {
             // the map and its pins at the wrong offsets.
             lastBitmap = null
             lastSnapshot = null
-            dragX = 0f
-            dragY = 0f
+            contextSnapshot = null
         }
         failures = 0
         // Paint immediately: until the first snapshot lands the car screen would
@@ -159,12 +203,7 @@ class CarMapRenderer(private val context: Context) {
             Log.w(TAG, "drawStatus: surface not valid")
             return
         }
-        val canvas = try {
-            surface.lockCanvas(null)
-        } catch (e: Throwable) {
-            Log.e(TAG, "drawStatus lockCanvas failed", e)
-            return
-        }
+        val canvas = lock(surface) ?: return
         try {
             canvas.drawColor(Color.rgb(0xF6, 0xF8, 0xF4))
             status?.let {
@@ -177,17 +216,47 @@ class CarMapRenderer(private val context: Context) {
     }
 
     fun detach() {
-        main.removeCallbacks(commitDrag)
-        main.removeCallbacks(commitZoom)
+        main.removeCallbacks(renderSoon)
         main.removeCallbacks(watchdog)
-        gestureScale = 1f
         snapshotInFlight = false
         snapshotQueued = false
         snapshotter?.cancel()
         snapshotter = null
+        cancelContext()
+        contextSnapshotter = null
         surface = null
         lastSnapshot = null
         lastBitmap = null
+        contextSnapshot = null
+    }
+
+    /**
+     * GPU canvas where the surface allows it: scaling a frame every gesture
+     * step is what makes a drag or pinch feel smooth, and on the CPU that
+     * costs tens of milliseconds a frame. Once a surface has been drawn one
+     * way it cannot be locked the other, so the choice is made once.
+     */
+    private var hardwareCanvas: Boolean? = null
+
+    private fun lock(surface: Surface): Canvas? {
+        if (hardwareCanvas != false) {
+            try {
+                return surface.lockHardwareCanvas().also { hardwareCanvas = true }
+            } catch (e: Throwable) {
+                if (hardwareCanvas == true) {
+                    Log.e(TAG, "lockHardwareCanvas failed", e)
+                    return null
+                }
+                Log.w(TAG, "no hardware canvas, drawing on the CPU", e)
+                hardwareCanvas = false
+            }
+        }
+        return try {
+            surface.lockCanvas(null)
+        } catch (e: Throwable) {
+            Log.e(TAG, "lockCanvas failed", e)
+            null
+        }
     }
 
     // ---- inputs ----------------------------------------------------------
@@ -203,7 +272,7 @@ class CarMapRenderer(private val context: Context) {
 
     fun setCamera(target: LatLng, zoom: Double) {
         camera = CameraPosition.Builder().target(target).zoom(zoom).build()
-        snapshotter?.setCameraPosition(camera)
+        redrawLastFrame()
         requestSnapshot()
     }
 
@@ -254,14 +323,12 @@ class CarMapRenderer(private val context: Context) {
 
     /** Nearest device to a tap, as the phone's map does it. */
     fun deviceAt(x: Float, y: Float, tolerance: Float = 34f): CarDevice? {
-        val snapshot = lastSnapshot ?: return null
+        val view = view() ?: return null
         var best: CarDevice? = null
         var bestDist = tolerance
-        val bx = toBufferX(x)
-        val by = toBufferY(y)
         for (d in devices) {
-            val p = snapshot.pixelForLatLng(d.position)
-            val dist = Math.hypot((p.x - bx).toDouble(), (p.y - by).toDouble()).toFloat()
+            val p = view.toScreen(d.position)
+            val dist = Math.hypot((p.x - x).toDouble(), (p.y - y).toDouble()).toFloat()
             if (dist < bestDist) {
                 bestDist = dist
                 best = d
@@ -272,10 +339,8 @@ class CarMapRenderer(private val context: Context) {
 
     /** Pixel distance to any position, for "which is closer" checks. */
     fun markerDistanceTo(x: Float, y: Float, position: LatLng): Float {
-        val snapshot = lastSnapshot ?: return Float.MAX_VALUE
-        val p = snapshot.pixelForLatLng(position)
-        return Math.hypot((p.x - toBufferX(x)).toDouble(), (p.y - toBufferY(y)).toDouble())
-            .toFloat()
+        val p = view()?.toScreen(position) ?: return Float.MAX_VALUE
+        return Math.hypot((p.x - x).toDouble(), (p.y - y).toDouble()).toFloat()
     }
 
     /** Distance in pixels to the nearest rewir pin, for "which is closer" checks. */
@@ -284,8 +349,7 @@ class CarMapRenderer(private val context: Context) {
 
     /** The taken rewir whose polygon contains this tap, if any. */
     fun shapeAt(x: Float, y: Float): CarMarker? {
-        val snapshot = lastSnapshot ?: return null
-        val at = snapshot.latLngForPixel(PointF(toBufferX(x), toBufferY(y))) ?: return null
+        val at = view()?.latLngAt(x, y) ?: return null
         for (shape in shapes) {
             if (CarMapStore.contains(shape, at.longitude, at.latitude)) {
                 return markers.firstOrNull { it.id == shape.markerId }
@@ -302,101 +366,70 @@ class CarMapRenderer(private val context: Context) {
     // ---- gestures --------------------------------------------------------
 
     /**
-     * Finger moved: shift the last frame, no re-render yet. The car host has no
-     * "scroll finished" callback, so the real camera move is committed once the
-     * gesture has been quiet for a moment.
+     * Finger moved: the camera follows at once and the frames in hand are
+     * redrawn under it. The car host has no "scroll finished" callback, so the
+     * render of the new camera starts once the gesture has been quiet for a
+     * moment — or straight away when the drag is about to run off the frame.
      */
     fun onDrag(dx: Float, dy: Float) {
-        dragX += dx
-        dragY += dy
+        val view = view() ?: return
+        val target = view.latLngAt(width / 2f - dx, height / 2f - dy) ?: return
+        camera = CameraPosition.Builder().target(target).zoom(camera.zoom).build()
         redrawLastFrame()
-        main.removeCallbacks(commitDrag)
-        // Inside the rendered margin the blit shows real map, so re-rendering
-        // can wait; near the edge it cannot.
-        val nearEdge = Math.abs(dragX) > marginX() * 0.7f || Math.abs(dragY) > marginY() * 0.7f
-        main.postDelayed(commitDrag, if (nearEdge) 60 else 400)
+        scheduleRender(if (view().let { it == null || it.nearEdge() }) 60 else DRAG_SETTLE_MS)
     }
 
-    private val commitDrag = Runnable { onDragEnd() }
+    /** Kept for callers that report the end of a drag; the render is already due. */
+    fun onDragEnd() = scheduleRender(0)
 
-    /** Finger lifted: turn the accumulated shift into a real camera move. */
-    fun onDragEnd() {
-        val snapshot = lastSnapshot
-        if (snapshot == null || (dragX == 0f && dragY == 0f)) {
-            dragX = 0f; dragY = 0f
-            return
-        }
-        // The pixel under the screen centre AFTER the drag becomes the new
-        // centre — in buffer space, where the projection lives.
-        val target = snapshot.latLngForPixel(
-            PointF(bufferW / 2f - dragX, bufferH / 2f - dragY),
-        )
-        dragX = 0f
-        dragY = 0f
-        setCamera(target, camera.zoom)
+    private val renderSoon = Runnable { requestSnapshot() }
+
+    private fun scheduleRender(delayMs: Long) {
+        main.removeCallbacks(renderSoon)
+        main.postDelayed(renderSoon, delayMs)
     }
-
-    /** Live pinch state: the frame is scaled in place until the fingers stop. */
-    private var gestureScale = 1f
-    private var gestureFocusX = 0f
-    private var gestureFocusY = 0f
-
-    private val commitZoom = Runnable { commitZoomNow() }
 
     fun onZoom(factor: Float) = onZoomAt(width / 2f, height / 2f, factor)
 
     /**
      * Pinch keeps the point under the fingers put, instead of always zooming on
      * the middle of the screen — the map moves the way it does on the phone.
+     * The host reports a negative focus when it has none (zoom buttons, the
+     * rotary knob); those zoom on the middle.
      */
     fun onZoomAt(focusX: Float, focusY: Float, factor: Float) {
-        if (lastSnapshot == null) {
-            setCamera(
-                camera.target ?: FALLBACK,
-                (camera.zoom + Math.log(factor.toDouble()) / Math.log(2.0)).coerceIn(4.0, 17.0),
-            )
+        if (factor <= 0f || factor.isNaN()) return
+        val fx = if (focusX < 0f || focusX > width) width / 2f else focusX
+        val fy = if (focusY < 0f || focusY > height) height / 2f else focusY
+        val zoom = (camera.zoom + Math.log(factor.toDouble()) / Math.log(2.0))
+            .coerceIn(MIN_ZOOM, MAX_ZOOM)
+        val view = view()
+        if (view == null) {
+            setCamera(camera.target ?: FALLBACK, zoom)
             return
         }
-        // A pinch fires many scale events, and re-rendering on each one means
-        // waiting on map tiles over and over. Scale the frame already in hand
-        // while the fingers move, and render once when they settle.
-        gestureFocusX = focusX
-        gestureFocusY = focusY
-        gestureScale = (gestureScale * factor).coerceIn(0.2f, 5f)
+        // The spot under the fingers, in frame pixels, stays under the fingers
+        // at the new scale; the target is whatever then lands mid-screen.
+        val focus = view.toFrame(fx, fy)
+        val scale = Math.pow(2.0, zoom - snapZoom).toFloat()
+        val target = view.snapshot.latLngForPixel(
+            PointF(focus.x - (fx - width / 2f) / scale, focus.y - (fy - height / 2f) / scale),
+        ) ?: return
+        camera = CameraPosition.Builder().target(target).zoom(zoom).build()
         redrawLastFrame()
-        main.removeCallbacks(commitZoom)
-        main.postDelayed(commitZoom, ZOOM_SETTLE_MS)
-    }
-
-    private fun commitZoomNow() {
-        val k = gestureScale
-        val snapshot = lastSnapshot
-        if (snapshot == null || Math.abs(k - 1f) < 0.01f) {
-            gestureScale = 1f
-            return
-        }
-        val zoom = (camera.zoom + Math.log(k.toDouble()) / Math.log(2.0)).coerceIn(4.0, 17.0)
-        val cx = bufferW / 2f
-        val cy = bufferH / 2f
-        val fx = toBufferX(gestureFocusX)
-        val fy = toBufferY(gestureFocusY)
-        val target = snapshot.latLngForPixel(
-            PointF(cx + (fx - cx) * (1f - 1f / k), cy + (fy - cy) * (1f - 1f / k)),
-        ) ?: camera.target ?: FALLBACK
-        gestureScale = 1f
-        setCamera(target, zoom)
+        // A pinch fires many scale events, and rendering on each one means
+        // waiting on map tiles over and over; render once the fingers settle.
+        scheduleRender(ZOOM_SETTLE_MS)
     }
 
     /** Which marker (if any) sits under a tap, within `tolerance` pixels. */
     fun markerAt(x: Float, y: Float, tolerance: Float = 44f): CarMarker? {
-        val snapshot = lastSnapshot ?: return null
+        val view = view() ?: return null
         var best: CarMarker? = null
         var bestDist = tolerance
-        val bx = toBufferX(x)
-        val by = toBufferY(y)
         for (m in markers) {
-            val p = snapshot.pixelForLatLng(m.position)
-            val d = Math.hypot((p.x - bx).toDouble(), (p.y - by).toDouble()).toFloat()
+            val p = view.toScreen(m.position)
+            val d = Math.hypot((p.x - x).toDouble(), (p.y - y).toDouble()).toFloat()
             if (d < bestDist) {
                 bestDist = d
                 best = m
@@ -444,13 +477,30 @@ class CarMapRenderer(private val context: Context) {
             .withPixelRatio(1f) // the surface is already in device pixels
             .withLogo(false)
         snapshotter = MapSnapshotter(context, options)
+        cancelContext()
+        contextSnapshotter = MapSnapshotter(
+            context,
+            MapSnapshotter.Options(bufferW, bufferH)
+                .withStyleJson(json)
+                .withCameraPosition(contextCamera())
+                .withPixelRatio(1f)
+                .withLogo(false),
+        )
         requestSnapshot()
     }
 
     /** Last resort: a render that never calls back must not freeze the map. */
     private val watchdog = Runnable {
         if (snapshotInFlight) {
-            Log.w(TAG, "snapshot did not return in ${WATCHDOG_MS}ms — releasing the latch")
+            Log.w(TAG, "snapshot did not return in ${WATCHDOG_MS}ms — cancelling it")
+            // A snapshotter that is still busy throws if started again, which
+            // took the whole car app down on a slow connection. Cancelling
+            // clears it for reuse; tiles it already fetched stay cached.
+            try {
+                snapshotter?.cancel()
+            } catch (e: Throwable) {
+                Log.e(TAG, "cancel failed", e)
+            }
             snapshotInFlight = false
             snapshotQueued = false
             requestSnapshot()
@@ -458,13 +508,20 @@ class CarMapRenderer(private val context: Context) {
     }
 
     private fun requestSnapshot() {
+        main.removeCallbacks(renderSoon)
         val snapshotter = snapshotter ?: return
         if (snapshotInFlight) {
             // Coalesce: one more render once the current one lands.
             snapshotQueued = true
             return
         }
+        // The backdrop can wait; the frame the user is looking at cannot.
+        cancelContext()
         snapshotInFlight = true
+        // Set here and only here: moving the camera of a render already under
+        // way would leave no telling which camera the frame belongs to.
+        val rendering = camera
+        snapshotter.setCameraPosition(rendering)
         val startedAt = android.os.SystemClock.uptimeMillis()
         main.removeCallbacks(watchdog)
         main.postDelayed(watchdog, WATCHDOG_MS)
@@ -473,23 +530,22 @@ class CarMapRenderer(private val context: Context) {
             main.removeCallbacks(watchdog)
             failures = 0
             status = null
-            // This frame IS the current camera, so any accumulated drag is
-            // already baked into it. Keeping the old offsets around shifted the
-            // next repaint and threw the pins off the map under them.
-            dragX = 0f
-            dragY = 0f
-            main.removeCallbacks(commitDrag)
             lastSnapshot = snapshot
             lastBitmap = snapshot.bitmap
+            snapZoom = rendering.zoom
             Log.i(
                 TAG,
                 "snapshot ready ${snapshot.bitmap.width}x${snapshot.bitmap.height} " +
                     "in ${android.os.SystemClock.uptimeMillis() - startedAt}ms",
             )
-            drawFrame(snapshot.bitmap, 0f, 0f)
+            // Drawn against the camera as it is NOW, which may have moved on
+            // while this rendered; the frame lands where it belongs.
+            redrawLastFrame()
             if (snapshotQueued) {
                 snapshotQueued = false
                 main.post { requestSnapshot() }
+            } else {
+                renderContextIfNeeded()
             }
         }, { error ->
             snapshotInFlight = false
@@ -513,6 +569,49 @@ class CarMapRenderer(private val context: Context) {
                 }
             }
         })
+    }
+
+    private fun contextCamera(): CameraPosition = CameraPosition.Builder()
+        .target(camera.target ?: FALLBACK)
+        .zoom((camera.zoom - CONTEXT_ZOOM_OUT).coerceAtLeast(0.0))
+        .build()
+
+    /**
+     * Render the backdrop once the view is idle, unless the one in hand still
+     * surrounds the view comfortably at about the right scale.
+     */
+    private fun renderContextIfNeeded() {
+        val ctx = contextSnapshotter ?: return
+        if (contextInFlight || snapshotInFlight) return
+        val wanted = contextCamera()
+        contextSnapshot?.let { current ->
+            val t = current.pixelForLatLng(camera.target ?: FALLBACK)
+            val centred = Math.abs(t.x - current.bitmap.width / 2f) < current.bitmap.width / 8f &&
+                Math.abs(t.y - current.bitmap.height / 2f) < current.bitmap.height / 8f
+            if (centred && Math.abs(contextZoom - wanted.zoom) < 0.75) return
+        }
+        contextInFlight = true
+        ctx.setCameraPosition(wanted)
+        ctx.start({ snapshot ->
+            contextInFlight = false
+            contextSnapshot = snapshot
+            contextZoom = wanted.zoom
+            redrawLastFrame()
+        }, { error ->
+            // Only a backdrop: the detailed frame reports what matters.
+            contextInFlight = false
+            Log.w(TAG, "backdrop snapshot failed: $error")
+        })
+    }
+
+    private fun cancelContext() {
+        if (!contextInFlight) return
+        contextInFlight = false
+        try {
+            contextSnapshotter?.cancel()
+        } catch (e: Throwable) {
+            Log.e(TAG, "backdrop cancel failed", e)
+        }
     }
 
     /**
@@ -548,12 +647,11 @@ class CarMapRenderer(private val context: Context) {
     }
 
     private fun redrawLastFrame() {
-        val bitmap = lastBitmap
-        if (bitmap == null) {
+        if (lastBitmap == null) {
             drawStatus()
             return
         }
-        drawFrame(bitmap, dragX, dragY)
+        drawFrame()
     }
 
     /** Repaint after the chrome changed (a panel opened, a card was closed). */
@@ -574,28 +672,18 @@ class CarMapRenderer(private val context: Context) {
         rebuildSnapshotter()
     }
 
-    private fun drawFrame(bitmap: Bitmap, offsetX: Float, offsetY: Float) {
+    private fun drawFrame() {
         val surface = surface ?: return
         if (!surface.isValid) return
-        val canvas: Canvas = try {
-            surface.lockCanvas(null)
-        } catch (e: Throwable) {
-            Log.e(TAG, "lockCanvas failed", e)
-            return
-        }
+        val frame = lastSnapshot ?: return
+        val canvas = lock(surface) ?: return
         val startedAt = android.os.SystemClock.uptimeMillis()
         try {
             canvas.drawColor(Color.rgb(0xE6, 0xED, 0xE1))
-            val zooming = Math.abs(gestureScale - 1f) > 0.01f
-            if (zooming) {
-                // Map and its pins scale together about the pinch focus; the
-                // chrome must not, so it is drawn outside this transform.
-                canvas.save()
-                canvas.scale(gestureScale, gestureScale, gestureFocusX, gestureFocusY)
-            }
-            canvas.drawBitmap(bitmap, offsetX - marginX(), offsetY - marginY(), null)
-            drawOverlays(canvas, offsetX, offsetY)
-            if (zooming) canvas.restore()
+            contextSnapshot?.let { drawSnapshot(canvas, FrameView(it, contextZoom)) }
+            val view = FrameView(frame, snapZoom)
+            drawSnapshot(canvas, view)
+            drawOverlays(canvas, view)
             overlay?.invoke(canvas, width, height)
         } finally {
             surface.unlockCanvasAndPost(canvas)
@@ -608,51 +696,59 @@ class CarMapRenderer(private val context: Context) {
         }
     }
 
-    /** Pins and the user puck go on with a plain Canvas — no style round-trip. */
-    private fun drawOverlays(canvas: Canvas, offsetX: Float, offsetY: Float) {
-        val snapshot = lastSnapshot ?: return
+    private fun drawSnapshot(canvas: Canvas, view: FrameView) {
+        canvas.save()
+        canvas.translate(width / 2f, height / 2f)
+        canvas.scale(view.scale, view.scale)
+        canvas.translate(-view.cx, -view.cy)
+        canvas.drawBitmap(view.snapshot.bitmap, 0f, 0f, bitmapPaint)
+        canvas.restore()
+    }
+
+    /**
+     * Pins and the user puck go on with a plain Canvas — no style round-trip.
+     * They keep their size through a pinch, as on the phone; only where they
+     * sit follows the map.
+     */
+    private fun drawOverlays(canvas: Canvas, view: FrameView) {
         for (m in markers) {
-            val p = snapshot.pixelForLatLng(m.position)
-            val x = p.x + offsetX - marginX()
-            val y = p.y + offsetY - marginY()
+            val p = view.toScreen(m.position)
             markerPaint.color = m.color
-            canvas.drawCircle(x, y, 14f, markerPaint)
-            canvas.drawCircle(x, y, 14f, strokePaint)
+            canvas.drawCircle(p.x, p.y, 14f, markerPaint)
+            canvas.drawCircle(p.x, p.y, 14f, strokePaint)
         }
         highlight?.let {
             // Selection ring, as the phone draws around a tapped device.
-            val p = snapshot.pixelForLatLng(it)
+            val p = view.toScreen(it)
             strokePaint.color = Color.rgb(0x15, 0x65, 0xC0)
             strokePaint.strokeWidth = 3f
-            canvas.drawCircle(p.x + offsetX - marginX(), p.y + offsetY - marginY(), 15f, strokePaint)
+            canvas.drawCircle(p.x, p.y, 15f, strokePaint)
             strokePaint.color = Color.WHITE
             strokePaint.strokeWidth = 4f
         }
         userLocation?.let {
-            val p = snapshot.pixelForLatLng(it)
-            val x = p.x + offsetX - marginX()
-            val y = p.y + offsetY - marginY()
+            val p = view.toScreen(it)
             // Accuracy ring: a ±40m fix next to a rewir boundary should LOOK
             // like one, rather than a confident dot on the wrong side of it.
             if (userAccuracy > 1f) {
-                val north = snapshot.pixelForLatLng(
+                val north = view.toScreen(
                     LatLng(it.latitude + userAccuracy / 111_320.0, it.longitude),
                 )
                 val radius = Math.abs(p.y - north.y)
                 if (radius > 2f) {
                     markerPaint.color = Color.argb(40, 0x15, 0x65, 0xC0)
-                    canvas.drawCircle(x, y, radius, markerPaint)
+                    canvas.drawCircle(p.x, p.y, radius, markerPaint)
                     strokePaint.color = Color.argb(90, 0x15, 0x65, 0xC0)
                     strokePaint.strokeWidth = 2f
-                    canvas.drawCircle(x, y, radius, strokePaint)
+                    canvas.drawCircle(p.x, p.y, radius, strokePaint)
                     strokePaint.color = Color.WHITE
                     strokePaint.strokeWidth = 4f
                 }
             }
             markerPaint.color =
                 if (userStale) Color.rgb(0x90, 0x9C, 0xA6) else Color.rgb(0x15, 0x65, 0xC0)
-            canvas.drawCircle(x, y, 12f, markerPaint)
-            canvas.drawCircle(x, y, 12f, strokePaint)
+            canvas.drawCircle(p.x, p.y, 12f, markerPaint)
+            canvas.drawCircle(p.x, p.y, 12f, strokePaint)
         }
     }
 

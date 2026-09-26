@@ -282,8 +282,22 @@ class CarMapRenderer(private val context: Context) {
                 json
             }
         }
-        rebuildSnapshotter()
+        if (snapshotter == null || contextSnapshotter == null) {
+            rebuildSnapshotter()
+            return
+        }
+        // Same size, same place: hand the renderers the new style and render
+        // the view again, instead of tearing them down. A style change is
+        // usually just fresh occupancy, every couple of minutes; rebuilding
+        // for that cancelled whatever was rendering and started cold.
+        styleDirty = true
+        contextStyleDirty = true
+        requestSnapshot()
     }
+
+    /** The style changed since the renderer last loaded it (see setStyle). */
+    private var styleDirty = false
+    private var contextStyleDirty = false
 
     fun setCamera(target: LatLng, zoom: Double) {
         camera = CameraPosition.Builder().target(target).zoom(zoom).build()
@@ -518,6 +532,8 @@ class CarMapRenderer(private val context: Context) {
             .withPixelRatio(1f) // the surface is already in device pixels
             .withLogo(false)
         snapshotter = MapSnapshotter(context, options)
+        styleDirty = false
+        contextStyleDirty = false
         cancelContext()
         contextSnapshotter = MapSnapshotter(
             context,
@@ -563,6 +579,12 @@ class CarMapRenderer(private val context: Context) {
         // Set here and only here: moving the camera of a render already under
         // way would leave no telling which camera the frame belongs to.
         val rendering = camera
+        if (styleDirty) {
+            // Only between renders: a style swapped under a running render
+            // would leave no telling which style the frame shows.
+            styleDirty = false
+            snapshotter.setStyleJson(styleJson ?: styleJsonFull ?: "")
+        }
         snapshotter.setCameraPosition(rendering)
         val startedAt = android.os.SystemClock.uptimeMillis()
         main.removeCallbacks(watchdog)
@@ -683,9 +705,13 @@ class CarMapRenderer(private val context: Context) {
             val t = current.pixelForLatLng(camera.target ?: FALLBACK)
             val centred = Math.abs(t.x - current.bitmap.width / 2f) < current.bitmap.width / 8f &&
                 Math.abs(t.y - current.bitmap.height / 2f) < current.bitmap.height / 8f
-            if (centred && Math.abs(contextZoom - wanted.zoom) < 0.75) return
+            if (!contextStyleDirty && centred && Math.abs(contextZoom - wanted.zoom) < 0.75) return
         }
         contextInFlight = true
+        if (contextStyleDirty) {
+            contextStyleDirty = false
+            ctx.setStyleJson(styleJson ?: styleJsonFull ?: "")
+        }
         ctx.setCameraPosition(wanted)
         ctx.start({ snapshot ->
             contextInFlight = false

@@ -248,7 +248,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return null;
       }
       const next = await doRefresh();
-      return next && next !== rejected ? next : null;
+      if (next && next !== rejected) return next;
+      // The server answered (it sent the 401), so this is not a lost
+      // connection: a refresh token that no longer works, with no saved
+      // password to fall back on, means the session really is over.
+      if (!credsRef.current && tokensRef.current?.accessToken === rejected) {
+        setSessionMessage('Sesja wygasła — zaloguj się ponownie.');
+        await persist(null);
+      }
+      return null;
     },
     [doRefresh, persist],
   );

@@ -116,6 +116,8 @@ export default function MapScreen() {
     latitude: number;
     zoom?: number;
   } | null>(null);
+  /** A hand gesture is under way: fixes must not pull the camera back mid-drag. */
+  const gestureRef = useRef(false);
 
   // While following, watch the position and move the camera with every fix.
   // The first fix also sets the zoom (the user's own, unless too far out to
@@ -132,6 +134,7 @@ export default function MapScreen() {
     Location.watchPositionAsync(
       { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 2 },
       (pos) => {
+        if (gestureRef.current) return;
         setTrackTo({
           longitude: pos.coords.longitude,
           latitude: pos.coords.latitude,
@@ -161,6 +164,7 @@ export default function MapScreen() {
    * (a pan) — a pinch leaves the user near the middle and keeps following.
    */
   const onUserMove = (camera: MapCamera) => {
+    gestureRef.current = false;
     if (!following || !trackTo) return;
     const metresPerPixel =
       (156543.03 * Math.cos((camera.latitude * Math.PI) / 180)) / Math.pow(2, camera.zoom);
@@ -611,6 +615,9 @@ export default function MapScreen() {
           showUserLocation={locationGranted}
           flyTo={flyTo}
           trackTo={following ? trackTo : null}
+          onUserMoveStart={() => {
+            gestureRef.current = true;
+          }}
           onUserMove={onUserMove}
           onMapPress={onMapPress}
           highlight={

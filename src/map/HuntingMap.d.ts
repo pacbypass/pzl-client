@@ -21,6 +21,8 @@ export type HuntingMapProps = {
    * given) every time it changes. Clearing it hands the camera back.
    */
   trackTo?: { longitude: number; latitude: number; zoom?: number } | null;
+  /** The user started moving the map by hand. */
+  onUserMoveStart?: () => void;
   /** The user moved the map by hand (pan or pinch), with where it ended up. */
   onUserMove?: (camera: MapCamera) => void;
 };

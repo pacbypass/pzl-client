@@ -158,6 +158,9 @@ class CarMapChrome(
             drawIn(canvas, width, height)
             return
         }
+        // The book is a page, not a map: outside the safe area it gets the
+        // page colour too, rather than a sliver of map beside the list.
+        if (tab == CarTab.BOOK) canvas.drawColor(CarTheme.background)
         canvas.save()
         canvas.translate(safe.left.toFloat(), safe.top.toFloat())
         canvas.clipRect(0, 0, safe.width(), safe.height())

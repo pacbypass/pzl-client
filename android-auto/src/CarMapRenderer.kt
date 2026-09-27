@@ -263,32 +263,17 @@ class CarMapRenderer(private val context: Context) {
     }
 
     /**
-     * GPU canvas where the surface allows it: scaling a frame every gesture
-     * step is what makes a drag or pinch feel smooth, and on the CPU that
-     * costs tens of milliseconds a frame. Once a surface has been drawn one
-     * way it cannot be locked the other, so the choice is made once.
+     * CPU canvas, as the car rendered up to 1.0.1 — the path known to work
+     * on a real head unit. 1.0.2 moved to a GPU canvas (lockHardwareCanvas),
+     * which could only ever be tested on the emulator, whose "GPU" is
+     * software; with the car then showing its controls but no map, the
+     * untested path goes. At car screen sizes the CPU is quick enough.
      */
-    private var hardwareCanvas: Boolean? = null
-
-    private fun lock(surface: Surface): Canvas? {
-        if (hardwareCanvas != false) {
-            try {
-                return surface.lockHardwareCanvas().also { hardwareCanvas = true }
-            } catch (e: Throwable) {
-                if (hardwareCanvas == true) {
-                    Log.e(TAG, "lockHardwareCanvas failed", e)
-                    return null
-                }
-                Log.w(TAG, "no hardware canvas, drawing on the CPU", e)
-                hardwareCanvas = false
-            }
-        }
-        return try {
-            surface.lockCanvas(null)
-        } catch (e: Throwable) {
-            Log.e(TAG, "lockCanvas failed", e)
-            null
-        }
+    private fun lock(surface: Surface): Canvas? = try {
+        surface.lockCanvas(null)
+    } catch (e: Throwable) {
+        Log.e(TAG, "lockCanvas failed", e)
+        null
     }
 
     // ---- inputs ----------------------------------------------------------

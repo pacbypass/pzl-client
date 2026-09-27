@@ -65,9 +65,15 @@ class CarUi {
      */
     private fun textSize(size: Float) = size * TEXT_BOOST
 
-    fun begin(width: Int, height: Int) {
+    /**
+     * Start a frame. `screenHeight` is the whole surface's height, which is
+     * what sizes are derived from — NOT the area laid out in, which the car's
+     * own UI can make much smaller (a 400px screen leaves 300px free), and
+     * scaling to that shrank all type and buttons by a quarter.
+     */
+    fun begin(width: Int, height: Int, screenHeight: Int = height) {
         hotspots.clear()
-        scale = (height / 400f).coerceIn(0.75f, 3f)
+        scale = (screenHeight / 400f).coerceIn(0.75f, 3f)
     }
 
     fun dp(v: Float) = v * scale

@@ -155,7 +155,7 @@ class CarMapChrome(
         // Everything below is laid out in the safe area's own coordinates.
         val safe = safeArea?.takeIf { it.width() > 0 && it.height() > 0 }
         if (safe == null) {
-            drawIn(canvas, width, height)
+            drawIn(canvas, width, height, height)
             return
         }
         // The book is a page, not a map: outside the safe area it gets the
@@ -164,12 +164,12 @@ class CarMapChrome(
         canvas.save()
         canvas.translate(safe.left.toFloat(), safe.top.toFloat())
         canvas.clipRect(0, 0, safe.width(), safe.height())
-        drawIn(canvas, safe.width(), safe.height())
+        drawIn(canvas, safe.width(), safe.height(), height)
         canvas.restore()
     }
 
-    private fun drawIn(canvas: Canvas, width: Int, height: Int) {
-        ui.begin(width, height)
+    private fun drawIn(canvas: Canvas, width: Int, height: Int, screenHeight: Int) {
+        ui.begin(width, height, screenHeight)
         val w = width.toFloat()
         // Everything sits above the tab bar, which is drawn last so its taps win.
         val h = height - ui.dp(42f)

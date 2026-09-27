@@ -199,6 +199,8 @@ class CarMapRenderer(private val context: Context) {
             status = "Błąd inicjalizacji mapy"
         }
         val resized = width != this.width || height != this.height
+        lockFailures = 0
+        surfaceReported = false
         this.surface = surface
         this.width = width
         this.height = height
@@ -270,11 +272,28 @@ class CarMapRenderer(private val context: Context) {
      * untested path goes. At car screen sizes the CPU is quick enough.
      */
     private fun lock(surface: Surface): Canvas? = try {
-        surface.lockCanvas(null)
+        surface.lockCanvas(null).also { lockFailures = 0 }
     } catch (e: Throwable) {
         Log.e(TAG, "lockCanvas failed", e)
+        lockFailures++
+        if (lockFailures >= 3 && !surfaceReported) {
+            // The surface cannot be drawn on at all. Seen on the real Android
+            // Auto host after our process was restarted while connected: the
+            // host still counted the dead process as the surface's producer
+            // ("already connected"), so nothing new ever reached the screen
+            // and the car kept showing a stale frame. Ask for a fresh one.
+            surfaceReported = true
+            Log.w(TAG, "surface unusable; asking the host for a new one")
+            onSurfaceUnusable?.invoke()
+        }
         null
     }
+
+    private var lockFailures = 0
+    /** Reported once per surface; attach() re-arms it. */
+    private var surfaceReported = false
+    /** The surface can no longer be drawn on; the screen should get a new one. */
+    var onSurfaceUnusable: (() -> Unit)? = null
 
     // ---- inputs ----------------------------------------------------------
 

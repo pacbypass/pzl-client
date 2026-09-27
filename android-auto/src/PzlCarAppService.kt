@@ -19,5 +19,10 @@ class PzlCarAppService : CarAppService() {
     override fun createHostValidator(): HostValidator =
         HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
 
+    override fun onCreate() {
+        super.onCreate()
+        CarCrashGuard.install(this)
+    }
+
     override fun onCreateSession(): Session = PzlSession()
 }

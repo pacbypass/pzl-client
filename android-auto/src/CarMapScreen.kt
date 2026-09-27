@@ -43,18 +43,6 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
         // The strip's actions depend on the tab, so rebuild the template when
         // it changes: "Zajęte" belongs to the map, not to the book.
         chrome.onTabChanged = { invalidate() }
-        // A surface we cannot draw on (see CarMapRenderer.lock): drop the
-        // callback and register again, which makes the host hand over a new
-        // surface instead of leaving the car on a frozen frame.
-        renderer.onSurfaceUnusable = {
-            val appManager = carContext.getCarService(AppManager::class.java)
-            renderer.detach()
-            appManager.setSurfaceCallback(null)
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                android.util.Log.i(TAG, "re-registering surface callback")
-                appManager.setSurfaceCallback(this)
-            }, 300)
-        }
     }
 
     override fun onCreate(owner: LifecycleOwner) {

@@ -201,7 +201,9 @@ class CarMapRenderer(private val context: Context) {
         val resized = width != this.width || height != this.height
         lockFailures = 0
         surfaceReported = false
+        if (this.surface !== surface) CarCrashGuard.release(this.surface)
         this.surface = surface
+        CarCrashGuard.surface = surface
         this.width = width
         this.height = height
         this.pixelRatio = (dpi / 160f).coerceAtLeast(1f)
@@ -258,6 +260,10 @@ class CarMapRenderer(private val context: Context) {
         snapshotter = null
         cancelContext()
         contextSnapshotter = null
+        // Disconnect from the host's surface rather than just dropping it: a
+        // producer that never disconnects keeps the host's buffer queue
+        // "already connected" to us, and nothing drawn later gets through.
+        CarCrashGuard.release(surface)
         surface = null
         lastSnapshot = null
         lastBitmap = null
@@ -277,14 +283,13 @@ class CarMapRenderer(private val context: Context) {
         Log.e(TAG, "lockCanvas failed", e)
         lockFailures++
         if (lockFailures >= 3 && !surfaceReported) {
-            // The surface cannot be drawn on at all. Seen on the real Android
-            // Auto host after our process was restarted while connected: the
-            // host still counted the dead process as the surface's producer
-            // ("already connected"), so nothing new ever reached the screen
-            // and the car kept showing a stale frame. Ask for a fresh one.
+            // Seen on the real host after a process died without releasing
+            // the surface: the host still counts it as connected and every
+            // draw fails. Nothing on our side can undo that for this drive
+            // (asking for a new surface returns the same stuck queue) —
+            // CarCrashGuard exists so we never leave one behind.
             surfaceReported = true
-            Log.w(TAG, "surface unusable; asking the host for a new one")
-            onSurfaceUnusable?.invoke()
+            Log.e(TAG, "surface cannot be drawn on (host still holds a dead producer?)")
         }
         null
     }
@@ -292,8 +297,6 @@ class CarMapRenderer(private val context: Context) {
     private var lockFailures = 0
     /** Reported once per surface; attach() re-arms it. */
     private var surfaceReported = false
-    /** The surface can no longer be drawn on; the screen should get a new one. */
-    var onSurfaceUnusable: (() -> Unit)? = null
 
     // ---- inputs ----------------------------------------------------------
 

@@ -1,7 +1,10 @@
-import React, { useState } from 'react';
-import { FlatList, StyleSheet, View } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { FlatList, Platform, StyleSheet, View } from 'react-native';
+import { useFocusEffect } from 'expo-router';
+import { File, Paths } from 'expo-file-system';
 import {
   Appbar,
+  Button,
   Card,
   Chip,
   Divider,
@@ -109,6 +112,65 @@ function LogRow({ entry }: { entry: LogEntry }) {
   );
 }
 
+/**
+ * Crashes of the Android Auto part, written by the car app (CarCrashGuard) to
+ * the same files directory. The car screen cannot show them itself — a crash
+ * there leaves at most a frozen frame — so they are read here.
+ */
+const CAR_CRASH_FILE = 'car-crash.txt';
+
+function readCarCrashes(): string | null {
+  if (Platform.OS !== 'android') return null;
+  try {
+    const file = new File(Paths.document, CAR_CRASH_FILE);
+    return file.exists ? file.textSync() || null : null;
+  } catch {
+    return null;
+  }
+}
+
+function CarCrashCard() {
+  const [text, setText] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setText(readCarCrashes());
+    }, []),
+  );
+  if (!text) return null;
+  const first = text.split('\n').find((l) => l.startsWith('===')) ?? '';
+  return (
+    <Card mode="outlined" style={[styles.card, styles.crashCard]}>
+      <Card.Content style={styles.rowContent}>
+        <Text variant="titleSmall">Awaria Android Auto</Text>
+        <Text variant="bodySmall" style={styles.muted}>
+          Ostatnia: {first.replace(/=/g, '').trim()}
+        </Text>
+        {open ? (
+          <Text variant="bodySmall" style={styles.url} selectable>
+            {text}
+          </Text>
+        ) : null}
+      </Card.Content>
+      <Card.Actions>
+        <Button onPress={() => setOpen((o) => !o)}>{open ? 'Zwiń' : 'Pokaż szczegóły'}</Button>
+        <Button
+          onPress={() => {
+            try {
+              new File(Paths.document, CAR_CRASH_FILE).delete();
+            } catch {
+              // Already gone.
+            }
+            setText(null);
+          }}
+        >
+          Wyczyść
+        </Button>
+      </Card.Actions>
+    </Card>
+  );
+}
+
 export default function DebugScreen() {
   const theme = useTheme();
   const logs = useRequestLogs();
@@ -124,6 +186,9 @@ export default function DebugScreen() {
         <Text variant="labelSmall" style={styles.muted}>
           Wersja aplikacji: {BUILD_LABEL} · {logs.length} zapytań
         </Text>
+      </View>
+      <View style={styles.crashRow}>
+        <CarCrashCard />
       </View>
 
       {logs.length === 0 ? (
@@ -147,6 +212,8 @@ export default function DebugScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   buildRow: { paddingHorizontal: 12, paddingTop: 8 },
+  crashRow: { paddingHorizontal: 12, paddingTop: 8 },
+  crashCard: { borderColor: '#c62828' },
   list: { padding: 12, gap: 8 },
   card: { borderRadius: 12 },
   rowContent: { gap: 4, paddingVertical: 8 },

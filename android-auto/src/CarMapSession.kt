@@ -33,6 +33,8 @@ class CarMapSession(
         private const val OCCUPANCY_EVERY_MS = 150_000L
         /** How often the position's age is re-judged. */
         private const val LOCATION_TICK_MS = 5_000L
+        /** After an answer from the offline copy, try the network again this soon. */
+        private const val OFFLINE_RETRY_MS = 30_000L
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -54,6 +56,9 @@ class CarMapSession(
             main.postDelayed(this, OCCUPANCY_EVERY_MS)
         }
     }
+
+    /** One early retry after an offline answer, so signal coming back shows soon. */
+    private val offlineRetry = Runnable { if (running) refreshOccupancy() }
 
     private val locationTick = object : Runnable {
         override fun run() {
@@ -112,6 +117,7 @@ class CarMapSession(
         running = false
         main.removeCallbacks(locationTick)
         main.removeCallbacks(occupancyTick)
+        main.removeCallbacks(offlineRetry)
     }
 
     /**
@@ -158,7 +164,11 @@ class CarMapSession(
     }
 
     private fun applyFor(generation: Int, fromCacheOnly: Boolean): (CarOccupancy.Applied?) -> Unit = { applied ->
-        if (!fromCacheOnly) occupancyInFlight = false
+        if (!fromCacheOnly) {
+            occupancyInFlight = false
+            main.removeCallbacks(offlineRetry)
+            if (applied == null || applied.offline) main.postDelayed(offlineRetry, OFFLINE_RETRY_MS)
+        }
         when {
             generation != baseGeneration -> {
                 // The hand-over changed underneath; ask again against the new one.

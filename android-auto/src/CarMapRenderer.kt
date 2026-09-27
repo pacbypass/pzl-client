@@ -88,11 +88,11 @@ class CarMapRenderer(private val context: Context) {
 
         fun toScreen(position: LatLng): PointF {
             val p = snapshot.pixelForLatLng(position)
-            return PointF((p.x - cx) * scale + width / 2f, (p.y - cy) * scale + height / 2f)
+            return PointF((p.x - cx) * scale + midX(), (p.y - cy) * scale + midY())
         }
 
         fun toFrame(x: Float, y: Float) =
-            PointF((x - width / 2f) / scale + cx, (y - height / 2f) / scale + cy)
+            PointF((x - midX()) / scale + cx, (y - midY()) / scale + cy)
 
         fun latLngAt(x: Float, y: Float): LatLng? = snapshot.latLngForPixel(toFrame(x, y))
 
@@ -100,14 +100,37 @@ class CarMapRenderer(private val context: Context) {
         fun nearEdge(): Boolean {
             val slackX = (bufferW - width) * 0.15f
             val slackY = (bufferH - height) * 0.15f
-            val halfW = width / 2f / scale
-            val halfH = height / 2f / scale
-            return cx - halfW < slackX || cx + halfW > snapshot.bitmap.width - slackX ||
-                cy - halfH < slackY || cy + halfH > snapshot.bitmap.height - slackY
+            // The camera target sits at the middle of the SAFE area, which
+            // need not be the middle of the surface, so the window can reach
+            // further one way than the other.
+            val left = cx - midX() / scale
+            val right = cx + (width - midX()) / scale
+            val top = cy - midY() / scale
+            val bottom = cy + (height - midY()) / scale
+            return left < slackX || right > snapshot.bitmap.width - slackX ||
+                top < slackY || bottom > snapshot.bitmap.height - slackY
         }
     }
 
     private fun view(): FrameView? = lastSnapshot?.let { FrameView(it, snapZoom) }
+
+    /**
+     * The part of the surface the car's own UI leaves free (its button strips
+     * sit over our surface). The camera target is drawn at its middle, so
+     * "centre on me" and follow-me put the driver where they can be seen.
+     * Null until the host reports it: then the whole surface.
+     */
+    private var safeArea: Rect? = null
+
+    fun setSafeArea(area: Rect?) {
+        val usable = area?.takeIf { it.width() > 0 && it.height() > 0 }
+        if (usable == safeArea) return
+        safeArea = usable
+        redrawLastFrame()
+    }
+
+    private fun midX() = safeArea?.exactCenterX() ?: (width / 2f)
+    private fun midY() = safeArea?.exactCenterY() ?: (height / 2f)
 
     private val main = Handler(Looper.getMainLooper())
     private val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -414,7 +437,7 @@ class CarMapRenderer(private val context: Context) {
             onFollowEnded?.invoke()
         }
         val view = view() ?: return
-        val target = view.latLngAt(width / 2f - dx, height / 2f - dy) ?: return
+        val target = view.latLngAt(midX() - dx, midY() - dy) ?: return
         camera = CameraPosition.Builder().target(target).zoom(camera.zoom).build()
         redrawLastFrame()
         if (view().let { it == null || it.nearEdge() }) {
@@ -475,7 +498,7 @@ class CarMapRenderer(private val context: Context) {
         main.postAtTime(renderSoon, due)
     }
 
-    fun onZoom(factor: Float) = onZoomAt(width / 2f, height / 2f, factor)
+    fun onZoom(factor: Float) = onZoomAt(midX(), midY(), factor)
 
     /**
      * Pinch keeps the point under the fingers put, instead of always zooming on
@@ -486,8 +509,8 @@ class CarMapRenderer(private val context: Context) {
     fun onZoomAt(focusX: Float, focusY: Float, factor: Float) {
         if (factor <= 0f || factor.isNaN()) return
         // While following, zoom about the driver (the middle) so they stay put.
-        val fx = if (following || focusX < 0f || focusX > width) width / 2f else focusX
-        val fy = if (following || focusY < 0f || focusY > height) height / 2f else focusY
+        val fx = if (following || focusX < 0f || focusX > width) midX() else focusX
+        val fy = if (following || focusY < 0f || focusY > height) midY() else focusY
         val zoom = (camera.zoom + Math.log(factor.toDouble()) / Math.log(2.0))
             .coerceIn(MIN_ZOOM, MAX_ZOOM)
         val view = view()
@@ -500,7 +523,7 @@ class CarMapRenderer(private val context: Context) {
         val focus = view.toFrame(fx, fy)
         val scale = Math.pow(2.0, zoom - snapZoom).toFloat()
         val target = view.snapshot.latLngForPixel(
-            PointF(focus.x - (fx - width / 2f) / scale, focus.y - (fy - height / 2f) / scale),
+            PointF(focus.x - (fx - midX()) / scale, focus.y - (fy - midY()) / scale),
         ) ?: return
         camera = CameraPosition.Builder().target(target).zoom(zoom).build()
         redrawLastFrame()
@@ -941,7 +964,7 @@ class CarMapRenderer(private val context: Context) {
 
     private fun drawSnapshot(canvas: Canvas, view: FrameView) {
         canvas.save()
-        canvas.translate(width / 2f, height / 2f)
+        canvas.translate(midX(), midY())
         canvas.scale(view.scale, view.scale)
         canvas.translate(-view.cx, -view.cy)
         canvas.drawBitmap(view.snapshot.bitmap, 0f, 0f, bitmapPaint)

@@ -52,7 +52,18 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
         session = CarMapSession(this, renderer, chrome, location)
         location.start()
         session.start()
-        renderer.overlay = { canvas, w, h -> chrome.draw(canvas, w, h) }
+        // --ez hostui true: mimic Android Auto's own strips over the right-hand
+        // side (as a real head unit reports them), to check nothing of ours
+        // ends up underneath.
+        val hostUi = intent.getBooleanExtra("hostui", false)
+        renderer.overlay = { canvas, w, h ->
+            chrome.draw(canvas, w, h)
+            if (hostUi) {
+                val p = android.graphics.Paint().apply { color = Color.argb(0xCC, 0x20, 0x20, 0x20) }
+                canvas.drawRoundRect(android.graphics.RectF(w - 250f, 12f, w - 12f, 64f), 26f, 26f, p)
+                canvas.drawRoundRect(android.graphics.RectF(w - 76f, 84f, w - 12f, 148f), 32f, 32f, p)
+            }
+        }
         val view = SurfaceView(this)
         view.holder.addCallback(this)
         // Touch must be handled ON the surface view: Activity.onTouchEvent
@@ -136,6 +147,12 @@ class CarMapPreviewActivity : Activity(), SurfaceHolder.Callback {
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         renderer.attach(holder.surface, width, height, resources.displayMetrics.densityDpi)
+        if (intent.getBooleanExtra("hostui", false)) {
+            // What a head unit reports as stable: clear of the strips above.
+            val safe = android.graphics.Rect(0, 0, width - 88, height)
+            chrome.safeArea = safe
+            renderer.setSafeArea(safe)
+        }
         session.load()
     }
 

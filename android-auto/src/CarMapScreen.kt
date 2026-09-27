@@ -5,6 +5,7 @@ import android.graphics.RectF
 import androidx.car.app.AppManager
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
+import android.graphics.Rect
 import androidx.car.app.SurfaceCallback
 import androidx.car.app.SurfaceContainer
 import androidx.car.app.model.Action
@@ -82,6 +83,23 @@ class CarMapScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
 
     override fun onSurfaceDestroyed(container: SurfaceContainer) {
         renderer.detach()
+    }
+
+    /**
+     * The part of the surface the host's own UI (its action strips) will not
+     * cover, whether or not those strips are showing right now. Our controls
+     * and the map's centre go there, so nothing hides under the car's buttons
+     * and does not jump about as the strips fade in and out.
+     */
+    override fun onStableAreaChanged(stableArea: Rect) {
+        android.util.Log.i(TAG, "stable area $stableArea")
+        chrome.safeArea = Rect(stableArea)
+        renderer.setSafeArea(Rect(stableArea))
+        renderer.redraw()
+    }
+
+    override fun onVisibleAreaChanged(visibleArea: Rect) {
+        android.util.Log.i(TAG, "visible area $visibleArea")
     }
 
     // ---- gestures --------------------------------------------------------

@@ -1,6 +1,7 @@
 package com.smallgis.pzl.client.car
 
 import android.graphics.Canvas
+import android.graphics.Rect
 import android.graphics.RectF
 import org.maplibre.android.geometry.LatLng
 
@@ -109,7 +110,10 @@ class CarMapChrome(
 
     /** True when the tap was consumed; the caller should repaint either way. */
     fun tap(x: Float, y: Float): Boolean {
-        if (ui.tap(x, y)) return true
+        // The controls were drawn in safe-area coordinates; the map is not.
+        val ox = safeArea?.left?.toFloat() ?: 0f
+        val oy = safeArea?.top?.toFloat() ?: 0f
+        if (ui.tap(x - ox, y - oy)) return true
         if (tab == CarTab.BOOK) return book.blocking()
         if (layersOpen) {
             layersOpen = false
@@ -139,7 +143,29 @@ class CarMapChrome(
     fun blockingGesture(): Boolean =
         layersOpen || tab == CarTab.BOOK || book.blocking()
 
+    /**
+     * Where the car's own UI leaves our surface free. Android Auto paints its
+     * button strips over the right-hand side of the map; drawn across the
+     * whole surface, our buttons, legend and cards ended up underneath them.
+     * Null until the host reports it.
+     */
+    var safeArea: Rect? = null
+
     fun draw(canvas: Canvas, width: Int, height: Int) {
+        // Everything below is laid out in the safe area's own coordinates.
+        val safe = safeArea?.takeIf { it.width() > 0 && it.height() > 0 }
+        if (safe == null) {
+            drawIn(canvas, width, height)
+            return
+        }
+        canvas.save()
+        canvas.translate(safe.left.toFloat(), safe.top.toFloat())
+        canvas.clipRect(0, 0, safe.width(), safe.height())
+        drawIn(canvas, safe.width(), safe.height())
+        canvas.restore()
+    }
+
+    private fun drawIn(canvas: Canvas, width: Int, height: Int) {
         ui.begin(width, height)
         val w = width.toFloat()
         // Everything sits above the tab bar, which is drawn last so its taps win.

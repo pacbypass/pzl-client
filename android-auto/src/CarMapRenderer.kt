@@ -62,6 +62,10 @@ class CarMapRenderer(private val context: Context) {
         private const val CONTEXT_ZOOM_OUT = 2.0
         /** Quiet time after a drag before a fresh render starts. */
         private const val DRAG_SETTLE_MS = 250L
+        /** After a first unreachable-server failure, try again this soon. */
+        private const val NETWORK_RETRY_MS = 2_000L
+        /** Layers set aside for a lost connection are retried this often. */
+        private const val RESTORE_MS = 15_000L
         /** While following, re-render at most this often (unless near the edge). */
         private const val FOLLOW_RENDER_MS = 2_500L
     }
@@ -222,6 +226,7 @@ class CarMapRenderer(private val context: Context) {
         renderDueAt = 0L
         main.removeCallbacks(watchdog)
         main.removeCallbacks(rebuildLater)
+        main.removeCallbacks(restoreRasters)
         snapshotInFlight = false
         snapshotQueued = false
         snapshotter?.cancel()
@@ -656,6 +661,7 @@ class CarMapRenderer(private val context: Context) {
             // while this rendered; the frame lands where it belongs.
             redrawLastFrame()
             failuresWithFrame = 0
+            networkFailures = 0
             if (snapshotQueued) {
                 snapshotQueued = false
                 scheduleRender(0)
@@ -666,7 +672,12 @@ class CarMapRenderer(private val context: Context) {
             snapshotInFlight = false
             main.removeCallbacks(watchdog)
             Log.e(TAG, "snapshot failed: $error")
-            if (!retryWithout(error)) {
+            // Only a tile that will not DECODE is worth dropping its layer for
+            // good. Anything else — no signal, a DNS or server hiccup — is
+            // passing: treating it as a broken layer threw the base map away
+            // on the first dropped connection and never brought it back.
+            val handled = if (isDecodeError(error)) retryWithout(error) else onUnreachable()
+            if (!handled) {
                 // Keep the last good frame if there is one; a stale map beats
                 // none. With nothing to show, keep trying rather than sitting
                 // on a blank screen.
@@ -697,6 +708,80 @@ class CarMapRenderer(private val context: Context) {
                 }
             }
         })
+    }
+
+    /** "bitmap decoding: couldn't get bitmap info" — a tile that is not an image. */
+    private fun isDecodeError(error: String): Boolean {
+        val e = error.lowercase()
+        return "decod" in e || "bitmap" in e
+    }
+
+    /** Consecutive renders that failed because a tile server could not be reached. */
+    private var networkFailures = 0
+    /** Raster sources set aside only until the connection is back. */
+    private val offlineDropped = mutableSetOf<String>()
+
+    /**
+     * A render failed because a tile server could not be reached. The first
+     * time, just try again shortly (with the frame in hand still shown): most
+     * are blips. If it keeps failing, render the map without its raster
+     * layers for now — the obwody, rewiry and devices still show, which is
+     * what matters in the woods — and try the full map again every
+     * [RESTORE_MS] until it loads.
+     */
+    private fun onUnreachable(): Boolean {
+        networkFailures++
+        if (networkFailures == 1) {
+            snapshotQueued = false
+            scheduleRender(NETWORK_RETRY_MS, postpone = false)
+            return true
+        }
+        val full = styleJsonFull ?: return false
+        val rasters = try {
+            CarStyleFilter.rasterSources(full)
+        } catch (e: Throwable) {
+            Log.e(TAG, "could not read style sources", e)
+            return false
+        }
+        val add = rasters.filter { it !in disabledSources }
+        if (add.isNotEmpty()) {
+            val filtered = try {
+                CarStyleFilter.without(full, disabledSources + add)
+            } catch (e: Throwable) {
+                Log.e(TAG, "could not filter style", e)
+                return false
+            }
+            Log.w(TAG, "tile servers unreachable; showing the map without $add until they are back")
+            offlineDropped.addAll(add)
+            disabledSources.addAll(add)
+            styleJson = filtered
+            styleDirty = true
+            contextStyleDirty = true
+            snapshotQueued = false
+            scheduleRender(0)
+        }
+        main.removeCallbacks(restoreRasters)
+        main.postDelayed(restoreRasters, RESTORE_MS)
+        return true
+    }
+
+    /** Try the layers set aside for a lost connection again. */
+    private val restoreRasters = Runnable {
+        if (offlineDropped.isEmpty()) return@Runnable
+        Log.i(TAG, "trying ${offlineDropped.size} raster layer(s) again")
+        disabledSources.removeAll(offlineDropped)
+        offlineDropped.clear()
+        val full = styleJsonFull ?: return@Runnable
+        styleJson = if (disabledSources.isEmpty()) full else try {
+            CarStyleFilter.without(full, disabledSources)
+        } catch (e: Throwable) {
+            full
+        }
+        styleDirty = true
+        contextStyleDirty = true
+        // Still offline: the next failure sets them aside again straight away.
+        networkFailures = 1
+        requestSnapshot()
     }
 
     /** Consecutive failed renders while an older frame stays on screen. */
@@ -824,6 +909,8 @@ class CarMapRenderer(private val context: Context) {
         if (disabledSources.isEmpty()) return
         Log.i(TAG, "retrying ${disabledSources.size} dropped source(s)")
         disabledSources.clear()
+        offlineDropped.clear()
+        main.removeCallbacks(restoreRasters)
         styleJson = styleJsonFull
         rebuildSnapshotter()
     }

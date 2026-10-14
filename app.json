@@ -2,7 +2,7 @@
   "expo": {
     "name": "Polowanie",
     "slug": "pzl-client",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "orientation": "portrait",
     "scheme": "pzlrev",
     "userInterfaceStyle": "automatic",
@@ -28,7 +28,7 @@
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION"
       ],
-      "versionCode": 7
+      "versionCode": 8
     },
     "web": {
       "bundler": "metro",

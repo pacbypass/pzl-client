@@ -178,12 +178,11 @@ function parseEntries(data: unknown): { entries: BookEntry[]; total: number } {
  * Entries per request. The server defaults to 10 and accepts anything (500+
  * simply returns the whole season), so this is a bandwidth choice, not a limit.
  * Measured against a 446-entry season: 50 → 119KB/560ms, 100 → 240KB/660ms,
- * 200 → 470KB/900ms, all → 874KB/1.1s. 100 cuts requests tenfold while
- * halving what 200 would pull down — and since the list shows ~5 rows, one
- * page is already twenty screens of scrolling. Raise it here if you would
- * rather trade signal for round trips.
+ * 200 → 470KB/900ms, all → 874KB/1.1s. On mobile data in the field 100
+ * took 3–8 s a request, so 50: half the bytes, still ten screens of scrolling
+ * per page. The Android Auto app (CarApi.PAGE_SIZE) uses the same size.
  */
-export const BOOK_PAGE_SIZE = 100;
+export const BOOK_PAGE_SIZE = 50;
 
 /**
  * Paginated book — 1-indexed `page` of BOOK_PAGE_SIZE entries,

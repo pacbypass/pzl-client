@@ -614,7 +614,13 @@ export default function MapScreen() {
         <Appbar.Content title="Mapa" subtitle={activeUnit?.name} />
         <View style={styles.age}>
           <DataAge
-            updatedAt={devices.dataUpdatedAt || districts.dataUpdatedAt}
+            // The hunt list's age when it is shown — the same list (and the
+            // same time) as on the Polowania tab.
+            updatedAt={
+              (settings.showOccupied && occupied.query.dataUpdatedAt) ||
+              devices.dataUpdatedAt ||
+              districts.dataUpdatedAt
+            }
             isFetching={fetching}
           />
         </View>

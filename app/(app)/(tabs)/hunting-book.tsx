@@ -19,8 +19,6 @@ import { EmptyState, ErrorState, LoadingScreen } from '@/components/ui';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import {
   bookKey,
-  fetchBookPage,
-  fetchBookPage1,
   harvestedNames,
   huntStatus,
   isCurrentlyHunting,
@@ -34,6 +32,7 @@ import {
 } from '@/features/huntingBook/lookups';
 import { useUnits } from '@/units/UnitProvider';
 import { useOnForeground } from '@/hooks/useOnForeground';
+import { refreshBook } from '@/features/huntingBook/sharedBook';
 
 /**
  * Pozyskanie — the harvest row (and the shots that produced it) reads in a deep
@@ -128,30 +127,9 @@ export default function HuntingBookScreen() {
     setRefreshing(true);
     setRefreshError(null);
     try {
-      // A "load more" landing after the splice would write back the page 1 it
-      // started from, undoing this refresh; let it finish first.
-      for (let i = 0; i < 100 && qc.isFetching({ queryKey: key }) > 0; i++) {
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      const before = qc.getQueryData<InfiniteData<BookPage>>(key);
-      const page1 = await fetchBookPage1(unitId, districtId, year);
-      const loaded = before?.pages.length ?? 0;
-      const fresh = new Set(page1.entries.map((e) => e.id));
-      const shifted =
-        page1.total !== before?.pages[0]?.total ||
-        (before?.pages[0]?.entries ?? []).some((e) => !fresh.has(e.id));
-      let rest: BookPage[] | null = null;
-      if (loaded > 1 && shifted) {
-        rest = [];
-        for (let page = 2; page <= loaded; page++) {
-          rest.push(await fetchBookPage(unitId, districtId, year, page));
-        }
-      }
-      qc.setQueryData<InfiniteData<BookPage>>(key, (old) =>
-        old && old.pages.length
-          ? { ...old, pages: [page1, ...(rest ?? old.pages.slice(1))] }
-          : old,
-      );
+      // The shared refresh (see sharedBook): the map reads this same list, so
+      // it updates there too, with the same "Dane z" time.
+      await refreshBook(qc, unitId, districtId, year);
       lastRefresh.current = Date.now();
     } catch (e) {
       // The list on screen stays as it was; say the refresh did not happen.

@@ -1,9 +1,8 @@
-import { useMemo } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { openHuntsIn, refreshBook, useCachedBooks } from '@/features/huntingBook/sharedBook';
 import {
-  fetchBookPage,
   huntStatus,
-  isOpenHunt,
   isUpcoming,
   normalizeRewir,
   rewirNames,
@@ -18,21 +17,11 @@ import type { Option } from '@/features/huntingBook/lookups';
  * its time but never written out, or signed up for later today. It is free again
  * only once the hunter writes out (or crosses the entry out).
  *
- * The map owns this fetch: showing the map pulls the hunt data for EVERY obwód
- * of the koło, so the highlight is correct even if the user never opened the
- * Polowania tab (which only ever loads one obwód at a time).
+ * The data is the Polowania tab's own hunt lists (sharedBook): showing the map
+ * makes sure EVERY obwód of the koło is loaded there, so the highlight is
+ * right even if the user never opened that tab, and both panels always show
+ * the same data with the same age.
  */
-
-/** Hard cap on pages scanned per obwód (BOOK_PAGE_SIZE entries each). With a
- *  100-entry page the first request almost always holds every open hunt. */
-const MAX_PAGES = 3;
-/**
- * Entries come newest-first (entry number descending ≈ creation order) and open
- * ones cluster at the top, so paging stops as soon as a whole page holds none —
- * plus this hard age limit, so an off-season book (whose newest entries are
- * months old) costs a single request.
- */
-const LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** Occupancy is time-sensitive, so unlike the static map layers it may refresh
  *  on its own — but at most this often (the map screen refetches when it is
@@ -70,40 +59,6 @@ export type OccupiedRewir = {
   districtKeys: string[];
   hunters: OccupiedHunter[];
 };
-
-function touchedAt(e: BookEntry): number {
-  const start = Date.parse(e.startDate ?? '') || 0;
-  const end = Date.parse(e.endDate ?? '') || 0;
-  return Math.max(start, end);
-}
-
-/** Unfinished hunts in one district book (usually 1–2 requests). */
-async function fetchOpenHunts(
-  unitId: string,
-  districtId: string,
-  year: number,
-): Promise<BookEntry[]> {
-  const open: BookEntry[] = [];
-  const cutoff = Date.now() - LOOKBACK_MS;
-  let loaded = 0;
-  for (let page = 1; page <= MAX_PAGES; page++) {
-    const p = await fetchBookPage(unitId, districtId, year, page);
-    loaded += p.entries.length;
-    const found = p.entries.filter(isOpenHunt);
-    open.push(...found);
-    if (!p.entries.length || loaded >= p.total) break;
-    // A full page with nothing open — everything below it was written out.
-    if (!found.length) break;
-    if (!p.entries.some((e) => touchedAt(e) >= cutoff)) break;
-  }
-  return open;
-}
-
-export const occupiedKey = (
-  unitId: string,
-  year: number | undefined,
-  districtIds: string[],
-) => ['occupiedRewirs', unitId, year, [...districtIds].sort().join(',')] as const;
 
 function toRewirs(rows: OpenHunt[], districts: Option[]) {
   const byKey = new Map<string, OccupiedRewir>();
@@ -157,9 +112,13 @@ function toRewirs(rows: OpenHunt[], districts: Option[]) {
 }
 
 /**
- * Currently-taken rewiry across every obwód of the koło. `districts` are the
- * obwód options (their labels end up on the list); `enabled` follows the map
- * layer toggle so the requests only happen when the layer is on.
+ * Currently-taken rewiry across every obwód of the koło, read from the SHARED
+ * hunt lists (see sharedBook): the same cache entries the Polowania tab shows,
+ * so both panels agree on what is happening and how fresh it is, and a refresh
+ * in either one updates both. `enabled` follows the map layer toggle.
+ *
+ * Returns a query-like handle (refetch / isStale / isFetching / timestamps),
+ * since that is what the map screen drives its refreshes and messages with.
  */
 export function useOccupiedRewirs(
   unitId: string,
@@ -167,53 +126,62 @@ export function useOccupiedRewirs(
   districts: Option[],
   enabled: boolean,
 ) {
-  const districtIds = useMemo(() => districts.map((d) => d.id), [districts]);
   const qc = useQueryClient();
-  const key = occupiedKey(unitId, year, districtIds);
+  const districtIds = useMemo(() => districts.map((d) => d.id), [districts]);
+  const books = useCachedBooks(qc, unitId, districtIds, year);
+  const [isFetching, setFetching] = useState(false);
+  const [errorUpdatedAt, setErrorUpdatedAt] = useState(0);
+  const ready = !!unitId && !!year && districtIds.length > 0 && enabled;
 
-  const query = useQuery({
-    queryKey: key,
-    enabled: !!unitId && !!year && districtIds.length > 0 && enabled,
-    staleTime: OCCUPIED_STALE_MS,
-    gcTime: 1000 * 60 * 60 * 24 * 7, // keep the last view readable offline
-    refetchOnReconnect: false,
-    queryFn: async (): Promise<OpenHunt[]> => {
-      // A failed fetch must NEVER read as "nobody is hunting": that paints
-      // taken rewiry as free. An obwód that fails keeps what was last known
-      // for it; with nothing known, the whole refresh fails, so the previous
-      // result stays on screen (with its age) and the error is reported.
-      const previous = qc.getQueryData<OpenHunt[]>(key);
+  const refetch = useCallback(async () => {
+    if (!ready) return;
+    setFetching(true);
+    try {
+      // Each obwód on its own: one that fails keeps its last known list
+      // (refreshBook never empties it), so a lost connection can never read
+      // as "nobody is hunting".
       const results = await Promise.allSettled(
-        districtIds.map((districtId) =>
-          fetchOpenHunts(unitId, districtId, year as number),
+        districtIds.map((d) =>
+          refreshBook(qc, unitId, d, year as number, { coverOpenHunts: true }),
         ),
       );
-      let firstError: unknown = null;
-      const out: OpenHunt[] = [];
-      results.forEach((r, i) => {
-        const districtId = districtIds[i];
-        if (r.status === 'fulfilled') {
-          out.push(...r.value.map((entry) => ({ districtId, entry })));
-        } else {
-          firstError ??= r.reason;
-        }
-      });
-      if (firstError !== null) {
-        if (!previous) throw firstError;
-        const failed = new Set(
-          districtIds.filter((_, i) => results[i].status === 'rejected'),
-        );
-        if (failed.size === districtIds.length) throw firstError;
-        out.push(...previous.filter((h) => failed.has(h.districtId)));
-      }
-      return out;
-    },
-  });
+      if (results.some((r) => r.status === 'rejected')) setErrorUpdatedAt(Date.now());
+    } finally {
+      setFetching(false);
+    }
+  }, [ready, qc, unitId, year, districtIds]);
 
-  const { rewirs, unplaced } = useMemo(
-    () => toRewirs(query.data ?? [], districts),
-    [query.data, districts],
+  // First view of an obwód nobody has loaded yet: fetch it.
+  const missing = ready && books.some((b) => !b.data);
+  useEffect(() => {
+    if (missing) void refetch();
+    // Only when a list is missing; refreshes are otherwise the screen's call.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [missing]);
+
+  // The age of the oldest list shown — what the map's data is as old as.
+  const dataUpdatedAt =
+    books.length > 0 && books.every((b) => b.dataUpdatedAt > 0)
+      ? Math.min(...books.map((b) => b.dataUpdatedAt))
+      : 0;
+
+  const rows = useMemo<OpenHunt[]>(
+    () =>
+      books.flatMap((b, i) =>
+        openHuntsIn(b.data).map((entry) => ({ districtId: districtIds[i], entry })),
+      ),
+    [books, districtIds],
   );
+  const { rewirs, unplaced } = useMemo(() => toRewirs(rows, districts), [rows, districts]);
+
+  const query = {
+    refetch,
+    isFetching,
+    isStale: !dataUpdatedAt || Date.now() - dataUpdatedAt > OCCUPIED_STALE_MS,
+    dataUpdatedAt,
+    errorUpdatedAt,
+    data: books.some((b) => b.data) ? rows : undefined,
+  };
 
   return { query, rewirs, unplaced };
 }

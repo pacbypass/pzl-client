@@ -118,33 +118,44 @@ function LogRow({ entry }: { entry: LogEntry }) {
  * there leaves at most a frozen frame — so they are read here.
  */
 const CAR_CRASH_FILE = 'car-crash.txt';
+/** Map-renderer events of the car app (CarCrashGuard.note): failures, dropped layers. */
+const CAR_RENDER_LOG = 'car-render.log';
 
-function readCarCrashes(): string | null {
+function readCarFile(name: string): string | null {
   if (Platform.OS !== 'android') return null;
   try {
-    const file = new File(Paths.document, CAR_CRASH_FILE);
+    const file = new File(Paths.document, name);
     return file.exists ? file.textSync() || null : null;
   } catch {
     return null;
   }
 }
 
-function CarCrashCard() {
+function CarFileCard({
+  file,
+  title,
+  alert,
+}: {
+  file: string;
+  title: string;
+  /** Red outline: something went wrong (a crash), not just a log. */
+  alert?: boolean;
+}) {
   const [text, setText] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   useFocusEffect(
     useCallback(() => {
-      setText(readCarCrashes());
-    }, []),
+      setText(readCarFile(file));
+    }, [file]),
   );
   if (!text) return null;
-  const first = text.split('\n').find((l) => l.startsWith('===')) ?? '';
+  const firstLine = text.split('\n').find((l) => l.trim()) ?? '';
   return (
-    <Card mode="outlined" style={[styles.card, styles.crashCard]}>
+    <Card mode="outlined" style={[styles.card, alert ? styles.crashCard : null]}>
       <Card.Content style={styles.rowContent}>
-        <Text variant="titleSmall">Awaria Android Auto</Text>
+        <Text variant="titleSmall">{title}</Text>
         <Text variant="bodySmall" style={styles.muted}>
-          Ostatnia: {first.replace(/=/g, '').trim()}
+          Ostatnie: {firstLine.replace(/=/g, '').trim()}
         </Text>
         {open ? (
           <Text variant="bodySmall" style={styles.url} selectable>
@@ -157,7 +168,7 @@ function CarCrashCard() {
         <Button
           onPress={() => {
             try {
-              new File(Paths.document, CAR_CRASH_FILE).delete();
+              new File(Paths.document, file).delete();
             } catch {
               // Already gone.
             }
@@ -188,7 +199,8 @@ export default function DebugScreen() {
         </Text>
       </View>
       <View style={styles.crashRow}>
-        <CarCrashCard />
+        <CarFileCard file={CAR_CRASH_FILE} title="Awaria Android Auto" alert />
+        <CarFileCard file={CAR_RENDER_LOG} title="Dziennik mapy Android Auto" />
       </View>
 
       {logs.length === 0 ? (
@@ -212,7 +224,7 @@ export default function DebugScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   buildRow: { paddingHorizontal: 12, paddingTop: 8 },
-  crashRow: { paddingHorizontal: 12, paddingTop: 8 },
+  crashRow: { paddingHorizontal: 12, paddingTop: 8, gap: 8 },
   crashCard: { borderColor: '#c62828' },
   list: { padding: 12, gap: 8 },
   card: { borderRadius: 12 },

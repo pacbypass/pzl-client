@@ -115,6 +115,10 @@ class CarLocation(private val context: Context) : LocationListener {
         // arrive, so a stale NETWORK fix cannot overwrite a live GPS one.
         val previous = lastFix
         if (previous != null && location.elapsedRealtimeNanos < previous.elapsedRealtimeNanos) return
+        if (previous != null && implausible(previous, location)) {
+            Log.i(TAG, "ignored ${location.provider} fix ±${location.accuracy.toInt()}m (jump)")
+            return
+        }
         val wasStale = ageMs() > STALE_FIX_MS
         lastFix = location
         accuracy = location.accuracy
@@ -134,8 +138,30 @@ class CarLocation(private val context: Context) : LocationListener {
         onUpdate?.invoke()
     }
 
+    /**
+     * Several providers report at once, and the network one (cell towers,
+     * Wi-Fi) can be kilometres off. Taking whichever fix was newest made the
+     * puck jump away for a moment every minute or two while driving and snap
+     * back with the next GPS fix. A fix is ignored while a good one is recent
+     * if it is much vaguer, or if reaching it would take an impossible speed.
+     */
+    private fun implausible(previous: Location, next: Location): Boolean {
+        val gapMs = (next.elapsedRealtimeNanos - previous.elapsedRealtimeNanos) / 1_000_000
+        if (gapMs > TRUST_RECENT_MS) return false // the old fix is too old to argue with
+        val prevAcc = if (previous.hasAccuracy()) previous.accuracy else 50f
+        val acc = if (next.hasAccuracy()) next.accuracy else 1_000f
+        if (acc > 50f && acc > prevAcc * 2f) return true
+        val metres = previous.distanceTo(next)
+        val speed = metres / (gapMs.coerceAtLeast(1_000L) / 1_000f)
+        return speed > MAX_SPEED_MPS && acc > 15f
+    }
+
     companion object {
         private const val TAG = "CarLocation"
+        /** A good fix younger than this is not overridden by a worse one. */
+        private const val TRUST_RECENT_MS = 20_000L
+        /** ~250 km/h: faster than this between fixes is a bad fix, not driving. */
+        private const val MAX_SPEED_MPS = 70f
         /** Past this a fix is shown as stale rather than trusted. */
         const val STALE_FIX_MS = 30_000L
     }

@@ -101,10 +101,21 @@ class CarMapSession(
         renderer.onFollowEnded = { renderer.redraw() }
     }
 
+    /**
+     * The book tab pulled a newer page into the shared list: recompute who is
+     * hunting from it (CarOccupancy takes fresh pages from the store, so this
+     * costs no download). Pages this session's own refresh stores arrive while
+     * it is still in flight and are ignored by refreshOccupancy.
+     */
+    private val storeListener: (String, Int) -> Unit = { _, page ->
+        if (running && page == 1) refreshOccupancy()
+    }
+
     /** Map on screen: timers run. */
     fun start() {
         if (running) return
         running = true
+        CarHuntStore.listen(storeListener)
         location.onUpdate = { pushLocation() }
         main.removeCallbacks(locationTick)
         main.post(locationTick)
@@ -115,6 +126,7 @@ class CarMapSession(
     /** Map off screen: no polling. */
     fun stop() {
         running = false
+        CarHuntStore.unlisten(storeListener)
         main.removeCallbacks(locationTick)
         main.removeCallbacks(occupancyTick)
         main.removeCallbacks(offlineRetry)
@@ -140,11 +152,14 @@ class CarMapSession(
             CarOccupancy.fromCache(context, base.styleJson, applyFor(baseGeneration, true))
             if (running) refreshOccupancy()
         }
-        show()
+        // Camera before style: the renderer is built when the style arrives,
+        // and its first frame should be the obwody, not all of Poland at
+        // zoom 6 (a full render of tiles nobody looks at, on a cold start).
         if (!cameraSet) {
             cameraSet = true
             renderer.setCamera(base.center, base.zoom)
         }
+        show()
     }
 
     /** "Odśwież" on the map: new hand-over if any, broken layers retried,

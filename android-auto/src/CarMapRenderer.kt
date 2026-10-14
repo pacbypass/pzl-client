@@ -66,6 +66,12 @@ class CarMapRenderer(private val context: Context) {
         private const val NETWORK_RETRY_MS = 2_000L
         /** Layers set aside for a lost connection are retried this often. */
         private const val RESTORE_MS = 15_000L
+        /** A frame without some layer is followed by a full re-render this soon… */
+        private const val HEAL_FIRST_MS = 3_000L
+        /** …backing off to at most this while it keeps failing. */
+        private const val HEAL_MAX_MS = 60_000L
+        /** A fresh renderer's first frame is followed by one more this soon. */
+        private const val SETTLE_MS = 2_000L
         /** While following, re-render at most this often (unless near the edge). */
         private const val FOLLOW_RENDER_MS = 2_500L
     }
@@ -254,6 +260,7 @@ class CarMapRenderer(private val context: Context) {
         main.removeCallbacks(watchdog)
         main.removeCallbacks(rebuildLater)
         main.removeCallbacks(restoreRasters)
+        main.removeCallbacks(heal)
         snapshotInFlight = false
         snapshotQueued = false
         snapshotter?.cancel()
@@ -601,6 +608,7 @@ class CarMapRenderer(private val context: Context) {
             .withPixelRatio(1f) // the surface is already in device pixels
             .withLogo(false)
         snapshotter = MapSnapshotter(context, options)
+        settleRender = true
         styleDirty = false
         contextStyleDirty = false
         cancelContext()
@@ -619,6 +627,7 @@ class CarMapRenderer(private val context: Context) {
     private val watchdog = Runnable {
         if (snapshotInFlight) {
             Log.w(TAG, "snapshot did not return in ${WATCHDOG_MS}ms — cancelling it")
+            CarCrashGuard.note("render timed out after ${WATCHDOG_MS}ms")
             // A snapshotter that is still busy throws if started again, which
             // took the whole car app down on a slow connection. Cancelling
             // clears it for reuse; tiles it already fetched stay cached.
@@ -692,6 +701,27 @@ class CarMapRenderer(private val context: Context) {
             redrawLastFrame()
             failuresWithFrame = 0
             networkFailures = 0
+            // A frame without some layer is never left standing: do what the
+            // "Odśwież" button does — full style, fresh renderer — after a
+            // short wait, backing off while it keeps failing.
+            if (settleRender) {
+                // The first frame of a fresh renderer can come back before
+                // every map tile has arrived; one more render a moment later
+                // (from cache, a few ms) fills in whatever was missing.
+                settleRender = false
+                CarCrashGuard.note(
+                    "first frame (${if (disabledSources.isEmpty()) "all layers" else "without $disabledSources"})",
+                )
+                if (!snapshotQueued) scheduleRender(SETTLE_MS, postpone = false)
+            }
+            if (disabledSources.isEmpty()) {
+                healDelayMs = HEAL_FIRST_MS
+                main.removeCallbacks(heal)
+            } else {
+                main.removeCallbacks(heal)
+                main.postDelayed(heal, healDelayMs)
+                healDelayMs = (healDelayMs * 2).coerceAtMost(HEAL_MAX_MS)
+            }
             if (snapshotQueued) {
                 snapshotQueued = false
                 scheduleRender(0)
@@ -702,6 +732,7 @@ class CarMapRenderer(private val context: Context) {
             snapshotInFlight = false
             main.removeCallbacks(watchdog)
             Log.e(TAG, "snapshot failed: $error")
+            CarCrashGuard.note("render failed: $error")
             // Only a tile that will not DECODE is worth dropping its layer for
             // good. Anything else — no signal, a DNS or server hiccup — is
             // passing: treating it as a broken layer threw the base map away
@@ -782,6 +813,7 @@ class CarMapRenderer(private val context: Context) {
                 return false
             }
             Log.w(TAG, "tile servers unreachable; showing the map without $add until they are back")
+            CarCrashGuard.note("dropped layers $add (unreachable)")
             offlineDropped.addAll(add)
             disabledSources.addAll(add)
             styleJson = filtered
@@ -793,6 +825,22 @@ class CarMapRenderer(private val context: Context) {
         main.removeCallbacks(restoreRasters)
         main.postDelayed(restoreRasters, RESTORE_MS)
         return true
+    }
+
+    /**
+     * The map came up without one of its layers (points but no map). On a
+     * real phone this happened on every start and only "Odśwież" fixed it —
+     * which clears the dropped layers and rebuilds the renderer. So that is
+     * exactly what this does, on its own.
+     */
+    private var healDelayMs = HEAL_FIRST_MS
+    /** The next frame is a fresh renderer's first. */
+    private var settleRender = false
+    private val heal = Runnable {
+        if (disabledSources.isEmpty() || surface == null) return@Runnable
+        Log.i(TAG, "rendering the full map again (${disabledSources.size} layer(s) were dropped)")
+        CarCrashGuard.note("restoring dropped layers $disabledSources")
+        retryDroppedSources()
     }
 
     /** Try the layers set aside for a lost connection again. */
@@ -906,6 +954,7 @@ class CarMapRenderer(private val context: Context) {
             ?: return false
         disabledSources.add(victim)
         Log.w(TAG, "dropping raster source '$victim' (tiles would not decode) and retrying")
+        CarCrashGuard.note("dropped layer '$victim' (decode)")
         styleJson = try {
             CarStyleFilter.without(full, disabledSources)
         } catch (e: Throwable) {

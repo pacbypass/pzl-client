@@ -31,7 +31,7 @@ object CarOccupancy {
     private const val TAG = "CarOccupancy"
     private const val CACHE_FILE = "car-occupancy.json"
     /** Same limits as the phone: at most this many pages per obwód… */
-    private const val MAX_PAGES = 3
+    private const val MAX_PAGES = 6
     /** …and stop once a page has nothing touched in the last two weeks. */
     private const val LOOKBACK_MS = 14L * 24 * 60 * 60 * 1000
     const val OCCUPIED_COLOR = "#c62828"
@@ -135,8 +135,9 @@ object CarOccupancy {
             var at = 0L
             if (access != null) {
                 try {
-                    open = fetchOpen(context, access, districtId)
-                    at = System.currentTimeMillis()
+                    val (found, fetchedAt) = fetchOpen(context, access, districtId)
+                    open = found
+                    at = fetchedAt
                 } catch (e: Exception) {
                     Log.w(TAG, "obwód $districtId: ${e.message}")
                 }
@@ -174,12 +175,15 @@ object CarOccupancy {
     }
 
     /** Unfinished hunts in one obwód's book — `fetchOpenHunts` on the phone. */
-    private fun fetchOpen(context: Context, access: CarApi.Access, districtId: String): JSONArray {
+    private fun fetchOpen(context: Context, access: CarApi.Access, districtId: String): Pair<JSONArray, Long> {
         val open = JSONArray()
+        // How old the data is: the oldest page used (shared with the book tab).
+        var oldest = Long.MAX_VALUE
         val cutoff = System.currentTimeMillis() - LOOKBACK_MS
         var loaded = 0
         for (page in 1..MAX_PAGES) {
-            val root = CarApi.bookPageBlocking(context, access, districtId, page)
+            val (root, fetchedAt) = CarApi.bookPageBlocking(context, access, districtId, page)
+            oldest = minOf(oldest, fetchedAt)
             val arr = root.optJSONArray("result") ?: JSONArray()
             val total = root.optInt("total", arr.length())
             loaded += arr.length()
@@ -198,7 +202,7 @@ object CarOccupancy {
             if (found == 0) break
             if (!recent) break
         }
-        return open
+        return open to (if (oldest == Long.MAX_VALUE) System.currentTimeMillis() else oldest)
     }
 
     // ---- the phone's rules -------------------------------------------------

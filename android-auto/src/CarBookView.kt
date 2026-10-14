@@ -58,6 +58,36 @@ class CarBookView(
     private var generation = 0
     /** No more pages: the last one came back short or empty. */
     private var exhausted = false
+    /** How many of `entries` came from page 1 (replaced when page 1 updates). */
+    private var firstPageCount = 0
+
+    /**
+     * The map's occupancy refresh pulled a newer page 1 of this obwód into the
+     * shared list: show it — same rows, same "dane z" time as the map — without
+     * fetching it again. Deeper pages the driver scrolled to stay.
+     */
+    private val storeListener: (String, Int) -> Unit = listener@{ district, page ->
+        if (page != 1 || district != districtId || loading) return@listener
+        val stored = CarHuntStore.get(district, 1) ?: return@listener
+        if (stored.fetchedAt <= fetchedAt) return@listener
+        val (list, t) = try {
+            CarApi.parsePage(stored.body)
+        } catch (e: Exception) {
+            return@listener
+        }
+        val ids = list.map { it.id }.toSet()
+        entries = list + entries.drop(firstPageCount).filter { it.id !in ids }
+        firstPageCount = list.size
+        total = t
+        fetchedAt = stored.fetchedAt
+        offline = false
+        error = null
+        onChanged()
+    }
+
+    init {
+        CarHuntStore.listen(storeListener)
+    }
 
     fun reload() {
         val id = districtId ?: districts().firstOrNull()?.first ?: return
@@ -71,6 +101,7 @@ class CarBookView(
             onResult = { list, t, at, fromCache ->
                 if (gen != generation) return@book
                 entries = list
+                firstPageCount = list.size
                 total = t
                 fetchedAt = at
                 exhausted = list.size < CarApi.BOOK_PAGE_SIZE || list.size >= t

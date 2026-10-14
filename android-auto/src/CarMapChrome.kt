@@ -16,8 +16,6 @@ import org.maplibre.android.geometry.LatLng
 /** Which of the app's tabs the car screen is showing. */
 enum class CarTab { MAP, BOOK }
 
-/** Where the driver is, in the koło's own terms. */
-data class CarWhereAmI(val text: String, val warn: Boolean)
 
 class CarMapChrome(
     private val context: android.content.Context,
@@ -36,43 +34,17 @@ class CarMapChrome(
     var onTabChanged: (() -> Unit)? = null
 
     /**
-     * Which rewir the driver is standing in, recomputed as fixes arrive. The
-     * point of the car screen is knowing you are where you are allowed to be,
-     * so this is stated outright instead of left to be read off the map.
-     */
-    var whereAmI: CarWhereAmI? = null
-        private set
-
-    /**
      * One entry point for a new fix, shared by the car Screen and the dev
-     * harness — position, its uncertainty, and which rewir it falls in. Keeping
-     * this in the Screen meant the harness could not exercise it.
+     * harness: the puck, its uncertainty, and whether it is stale. (The
+     * "Rewir X / Poza rewirami" readout that used to sit top-left is gone —
+     * it covered the map under the car's own buttons and was not wanted.)
      */
     fun updateLocation(position: LatLng?, accuracy: Float, ageMs: Long) {
         renderer.setUserLocation(position)
         // Also called on a timer, not only when a fix arrives: fixes simply
-        // stop coming in a tunnel or a forest, and the readout has to notice.
+        // stop coming in a tunnel or a forest, and the puck has to notice.
         val stale = ageMs > CarLocation.STALE_FIX_MS
         renderer.setUserAccuracy(accuracy, stale)
-        whereAmI = when {
-            position == null -> null
-            stale -> CarWhereAmI("Lokalizacja nieaktualna", true)
-            else -> {
-                val rewir = CarMapStore.rewirAt(data, position.longitude, position.latitude)
-                val metres = "±${accuracy.toInt()}m"
-                if (rewir == null) {
-                    CarWhereAmI("Poza rewirami koła · $metres", true)
-                } else {
-                    val district = CarApi.access(context)?.districts
-                        ?.firstOrNull { it.first == rewir.districtId }?.second
-                    CarWhereAmI(
-                        listOfNotNull("Rewir ${rewir.name}", district?.let { "Obwód $it" }, metres)
-                            .joinToString(" · "),
-                        false,
-                    )
-                }
-            }
-        }
         renderer.redraw()
     }
 
@@ -209,17 +181,6 @@ class CarMapChrome(
         if (!layersOpen && selected == null && selectedDevice == null) {
             drawLegend(canvas, h)
             ui.label(canvas, subtitle(), ui.dp(10f), h - ui.dp(4f), ui.dp(11f), CarTheme.muted)
-        }
-        // Position readout sits top-left, where nothing else competes for it.
-        whereAmI?.let { where ->
-            val text = ui.clip(where.text, ui.dp(13f), w * 0.62f, bold = true)
-            val box = RectF(ui.dp(8f), ui.dp(6f), ui.dp(16f) + w * 0.62f, ui.dp(34f))
-            ui.card(canvas, box, if (where.warn) CarUi.OVERDUE_CARD else CarTheme.surface, ui.dp(8f))
-            ui.block(box)
-            ui.label(
-                canvas, text, box.left + ui.dp(10f), box.centerY() + ui.dp(5f), ui.dp(13f),
-                if (where.warn) CarTheme.occupied else CarTheme.onSurface, bold = true,
-            )
         }
         selected?.let { drawHunterCard(canvas, w, h, it) }
         selectedDevice?.let { drawDeviceCard(canvas, w, h, it) }

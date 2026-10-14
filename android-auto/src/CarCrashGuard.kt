@@ -35,6 +35,7 @@ object CarCrashGuard {
         if (installed) return
         installed = true
         val app = context.applicationContext
+        appContext = app
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             try {
@@ -56,6 +57,28 @@ object CarCrashGuard {
         val old = if (file.exists()) file.readText() else ""
         // Newest first, and bounded.
         file.writeText((entry + old).take(MAX_BYTES))
+    }
+
+    /** Map-renderer events (failures, dropped layers), shown in the Debug tab. */
+    const val RENDER_LOG = "car-render.log"
+    private const val RENDER_LOG_MAX = 16 * 1024
+
+    @Volatile
+    private var appContext: Context? = null
+
+    /**
+     * Note a map event for later diagnosis. The car screen has no log of its
+     * own a user can read, and Logcat is out of reach on a phone in a car.
+     */
+    fun note(message: String) {
+        val context = appContext ?: return
+        try {
+            val file = File(context.filesDir, RENDER_LOG)
+            val stamp = SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(Date())
+            val old = if (file.exists()) file.readText() else ""
+            file.writeText(("$stamp $message\n" + old).take(RENDER_LOG_MAX))
+        } catch (_: Throwable) {
+        }
     }
 
     /** Let go of a surface we are done with, so the host can hand it on. */

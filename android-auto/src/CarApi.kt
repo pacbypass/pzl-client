@@ -21,7 +21,7 @@ object CarApi {
 
     private const val TAG = "CarApi"
     /** Keep in step with BOOK_PAGE_SIZE in src/features/huntingBook/book.ts. */
-    private const val PAGE_SIZE = 100
+    private const val PAGE_SIZE = 50
     private val io = Executors.newSingleThreadExecutor()
 
     data class Access(
@@ -260,14 +260,12 @@ object CarApi {
         io.execute {
             try {
                 val body = getAuthed(context, access, bookUrl(access, districtId, page))
-                val root = JSONObject(body)
-                val arr = root.optJSONArray("result") ?: JSONArray()
-                val total = root.optInt("total", arr.length())
-                val entries = (0 until arr.length()).mapNotNull { i ->
-                    arr.optJSONObject(i)?.let(::entry)
-                }
+                val (entries, total) = parsePage(body)
+                val now = System.currentTimeMillis()
                 writeCache(context, districtId, page, body)
-                main { onResult(entries, total, System.currentTimeMillis(), false) }
+                // Into the shared list: the map recomputes occupancy from it.
+                CarHuntStore.put(districtId, page, body, now)
+                main { onResult(entries, total, now, false) }
             } catch (e: Exception) {
                 Log.w(TAG, "book failed: ${e.message}")
                 val cached = readCache(context, districtId, page)
@@ -289,10 +287,29 @@ object CarApi {
      * One raw book page, for callers already on the IO thread (occupancy). The
      * page is cached exactly as `book` caches it, since it is the same data.
      */
-    internal fun bookPageBlocking(context: Context, access: Access, districtId: String, page: Int): JSONObject {
+    internal fun bookPageBlocking(
+        context: Context,
+        access: Access,
+        districtId: String,
+        page: Int,
+    ): Pair<JSONObject, Long> {
+        // A page the book (or an earlier pass) fetched moments ago is the same
+        // data; use it rather than downloading it again.
+        CarHuntStore.fresh(districtId, page)?.let { return JSONObject(it.body) to it.fetchedAt }
         val body = getAuthed(context, access, bookUrl(access, districtId, page))
+        val now = System.currentTimeMillis()
         writeCache(context, districtId, page, body)
-        return JSONObject(body)
+        CarHuntStore.put(districtId, page, body, now)
+        return JSONObject(body) to now
+    }
+
+    /** Entries and total of a raw book page. */
+    internal fun parsePage(body: String): Pair<List<Entry>, Int> {
+        val root = JSONObject(body)
+        val arr = root.optJSONArray("result") ?: JSONArray()
+        val total = root.optInt("total", arr.length())
+        val entries = (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::entry) }
+        return entries to total
     }
 
     internal const val BOOK_PAGE_SIZE = PAGE_SIZE

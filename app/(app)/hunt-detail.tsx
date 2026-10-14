@@ -30,6 +30,7 @@ import {
   useHuntAnimals,
   useHuntDetail,
   usePermitAnimals,
+  useUpdateHarvestWeight,
   useUpdateHunt,
   type HuntAnimal,
   type HuntDetail,
@@ -98,6 +99,8 @@ export default function HuntDetailScreen() {
   const animalsQuery = useHuntAnimals(unitId, districtId, seed?.id);
 
   const [addOpen, setAddOpen] = useState(false);
+  /** The harvest whose weight is being edited. */
+  const [weightFor, setWeightFor] = useState<HuntAnimal | null>(null);
   const [confirmFinish, setConfirmFinish] = useState(false);
   const [confirmCross, setConfirmCross] = useState(false);
 
@@ -201,7 +204,19 @@ export default function HuntDetailScreen() {
           <Card.Content>
             {animals.length ? (
               animals.map((a, i) => (
-                <List.Item key={a.id ?? i} title={animalLabel(a)} left={(p) => <List.Icon {...p} icon="paw" />} />
+                <List.Item
+                  key={a.id ?? i}
+                  title={animalLabel(a)}
+                  left={(p) => <List.Icon {...p} icon="paw" />}
+                  // The weight is usually known only after the hunt — at the
+                  // collection point — so a harvest can be edited afterwards.
+                  onPress={d.canEdit !== false ? () => setWeightFor(a) : undefined}
+                  right={
+                    d.canEdit !== false
+                      ? (p) => <List.Icon {...p} icon="pencil-outline" />
+                      : undefined
+                  }
+                />
               ))
             ) : (
               <Text style={styles.muted}>
@@ -273,6 +288,13 @@ export default function HuntDetailScreen() {
         huntingId={d.id}
         permits={permits}
         grounds={grounds}
+      />
+      <WeightDialog
+        animal={weightFor}
+        onDismiss={() => setWeightFor(null)}
+        unitId={unitId}
+        districtId={districtId ?? ''}
+        huntingId={d.id}
       />
       <FinishDialog
         visible={confirmFinish}
@@ -562,6 +584,80 @@ function SlotDialog({
         <Dialog.Actions>
           <Button onPress={onDismiss}>Anuluj</Button>
           <Button mode="contained" loading={pending} disabled={pending} onPress={submit}>
+            Zapisz
+          </Button>
+        </Dialog.Actions>
+      </Dialog>
+    </Portal>
+  );
+}
+
+/** Edit the weight of a recorded harvest. */
+function WeightDialog({
+  animal,
+  onDismiss,
+  unitId,
+  districtId,
+  huntingId,
+}: {
+  animal: HuntAnimal | null;
+  onDismiss: () => void;
+  unitId: string;
+  districtId: string | number;
+  huntingId: string;
+}) {
+  const update = useUpdateHarvestWeight(unitId);
+  const [text, setText] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const shownFor = useRef<HuntAnimal | null>(null);
+  // Fill in the current weight each time the dialog opens for an animal.
+  if (animal && shownFor.current !== animal) {
+    shownFor.current = animal;
+    setText(animal.weight != null ? String(animal.weight).replace('.', ',') : '');
+    setError(null);
+  }
+
+  const save = async () => {
+    if (!animal || update.isPending) return;
+    const raw = text.trim().replace(',', '.');
+    const weight = raw === '' ? null : Number(raw);
+    if (weight != null && (!Number.isFinite(weight) || weight <= 0 || weight > 1500)) {
+      setError('Podaj wagę w kilogramach, np. 65 albo 72,5.');
+      return;
+    }
+    setError(null);
+    try {
+      await update.mutateAsync({ districtId, huntingId, animal, weight });
+      onDismiss();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Nie udało się zapisać wagi.');
+    }
+  };
+
+  return (
+    <Portal>
+      <Dialog visible={!!animal} onDismiss={onDismiss} style={styles.dialog}>
+        <Dialog.Title>Waga — {animal?.name ?? 'zwierzyna'}</Dialog.Title>
+        <Dialog.Content>
+          <TextInput
+            mode="outlined"
+            label="Waga (kg)"
+            keyboardType="decimal-pad"
+            value={text}
+            // Typed as text, so "72," on the way to "72,5" is not thrown away.
+            onChangeText={(v) => setText(v.replace(/[^0-9.,]/g, ''))}
+            right={<TextInput.Affix text="kg" />}
+            autoFocus
+          />
+          {error ? (
+            <HelperText type="error" visible>
+              {error}
+            </HelperText>
+          ) : null}
+        </Dialog.Content>
+        <Dialog.Actions>
+          <Button onPress={onDismiss}>Anuluj</Button>
+          <Button mode="contained" loading={update.isPending} disabled={update.isPending} onPress={save}>
             Zapisz
           </Button>
         </Dialog.Actions>

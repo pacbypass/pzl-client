@@ -114,7 +114,64 @@ export type HuntAnimal = {
   date?: string | null;
   isWounded?: boolean;
   isPredatory?: boolean;
+  // Carried back unchanged when the harvest is edited (see updateHarvestBody).
+  purposeId?: string | null;
+  forDisposal?: boolean | null;
+  groundId?: number | null;
+  antlerTypeId?: number | null;
+  zipodAge?: string | null;
+  clinicalSigns?: string | null;
+  identifier?: string | null;
 };
+
+/**
+ * Body for editing a recorded harvest:
+ *   PUT /units/{u}/hunting-districts/{d}/huntings/{id}/animals/{huntedAnimalId}
+ * Fields as the original app's `huntedAnimalUpdateRequestSchema` (read from its
+ * bundle): forDisposal and harvestDate required; purpose (the purpose CODE,
+ * e.g. "W"), isMale, antlerTypeId, groundId, weight, age, zipodAge,
+ * clinicalSigns, identifier optional — and absent, never null, when unknown.
+ * The PUT replaces the record, so everything but the weight is sent back as
+ * the hunt's own animal list (GET …/animals) returned it.
+ */
+export function updateHarvestBody(a: HuntAnimal, weight: number | null): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    forDisposal: !!a.forDisposal,
+    harvestDate: a.date,
+  };
+  if (a.purposeId) body.purpose = a.purposeId;
+  if (a.isMale != null) body.isMale = a.isMale;
+  if (a.antlerTypeId != null) body.antlerTypeId = a.antlerTypeId;
+  if (a.groundId != null) body.groundId = a.groundId;
+  if (weight != null) body.weight = weight;
+  const age = a.age == null || a.age === '' ? null : Number(a.age);
+  if (age != null && Number.isInteger(age)) body.age = age;
+  if (a.zipodAge) body.zipodAge = a.zipodAge;
+  if (a.clinicalSigns) body.clinicalSigns = a.clinicalSigns;
+  if (a.identifier) body.identifier = a.identifier;
+  return body;
+}
+
+/** Set the weight of a recorded harvest (everything else stays as it is). */
+export function useUpdateHarvestWeight(unitId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      districtId: string | number;
+      huntingId: string;
+      animal: HuntAnimal;
+      weight: number | null;
+    }) =>
+      apiRequest(
+        `/units/${unitId}/hunting-districts/${input.districtId}/huntings/${input.huntingId}/animals/${input.animal.id}`,
+        { method: 'PUT', body: updateHarvestBody(input.animal, input.weight) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['huntAnimals', unitId] });
+      qc.invalidateQueries({ queryKey: ['huntDetail', unitId] });
+    },
+  });
+}
 
 /**
  * The hunt's recorded animals — the REAL list, from the sub-resource:
